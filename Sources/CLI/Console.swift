@@ -25,7 +25,6 @@ private struct CommandChoice {
 private struct FormChoice {
     let title: String
     var detail = ""
-    var searchNames: [String] = []
     let choose: (TerminalConsole) throws -> Void
 }
 
@@ -34,7 +33,11 @@ private struct ConsoleForm {
     let prompt: String
     var choices: [FormChoice] = []
     var accept: ((TerminalConsole, String) throws -> Void)? = nil
+    var returnCommand: [String]? = nil
 }
+
+private let presetEditCommand = ["presets", "edit"]
+private let newPresetOption = "--new"
 
 private enum EscapeStep {
     case deselect, dismissCompletions, backFromInput, backFromForm, backFromResult
@@ -105,7 +108,7 @@ private func commandOptions(for command: String) -> [CommandChoice] {
                   help: localized("停用预设，保留成员和出口设置。", "Turn off a preset and save its members and outbound for later.")),
             .init("route", localized("更改预设出口", "Change a preset's outbound"), ["presets", "route"], needsArgument: true,
                   help: localized("选择预设的出口。", "Set a preset's outbound.")),
-            .init("edit", localized("创建预设，管理成员和出口", "Create a preset or manage its members and outbound"), ["presets", "edit"],
+            .init("edit", localized("创建预设，管理成员和出口", "Create a preset or manage its members and outbound"), presetEditCommand, needsArgument: true,
                   help: localized("新建预设，编辑成员和出口，或删除自定义预设。",
                                   "Create a preset, edit its members and outbound, or delete a custom preset."))
         ]
@@ -122,7 +125,7 @@ private func commandOptions(for command: String) -> [CommandChoice] {
         return [
             .init("start", localized("验证并启动系统代理", "Verify and start the system proxy"), ["system", "start"],
                   help: localized("首次自动准备配置，依次验证 TUN 和 PF，通过后启用。失败时回退。",
-                                  "Prepare the profile, verify TUN and PF, and keep the deployment after both checks pass.")),
+                                  "Prepare the profile, verify TUN and PF, and confirm the deployment after both checks pass.")),
             .init("apply", localized("应用本机预设和其余流量的出口", "Apply local presets and the catch-all"),
                   ["system", "apply"], help: localized("应用待生效的路由设置。连接可能重连，PF 防护保持启用。",
                                                         "Apply pending routing settings. Connections may reconnect while PF stays enabled.")),
@@ -253,7 +256,7 @@ private struct ConsoleCanvas {
 
     var right: Int { left + width - 1 }
     var contentInset: Int { width >= 44 ? 3 : 2 }
-    var isCompact: Bool { size.rows < 9 || width < 22 }
+    var isCompact: Bool { size.rows < 10 || width < 22 }
     var composerRow: Int {
         isCompact ? size.rows - (size.rows >= 4 ? 1 : 0) : size.footerRow - 2
     }
@@ -597,9 +600,13 @@ private final class TerminalConsole {
         guard var arguments = try? parseLine(draft.text), let first = arguments.first else { return !suggestions.isEmpty }
         let command = consoleCommand(first)
         arguments[0] = command
-        if command == "presets", let name = arguments[safe: 2], let groups = profile?.routing.collections,
-           let index = RuleCollection.index(matching: name, in: groups) {
-            arguments[2] = groups[index].name
+        if command == "presets", let groups = profile?.routing.collections {
+            let editing = arguments[safe: 1] == "edit"
+            let nameIndex = editing && arguments[safe: 2] == "--" ? 3 : 2
+            if let name = arguments[safe: nameIndex], !(editing && nameIndex == 2 && name == newPresetOption),
+               let index = RuleCollection.index(matching: name, in: groups) {
+                arguments[nameIndex] = groups[index].name
+            }
         }
         let options = arguments.count == 1 ? commands : commandOptions(for: command)
         if options.contains(where: { $0.needsArgument && $0.arguments == arguments }) { return true }
@@ -624,8 +631,7 @@ private final class TerminalConsole {
     private var matchingFormChoices: [FormChoice] {
         let query = draft.text.trimmingCharacters(in: .whitespaces)
         return form?.choices.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) ||
-            $0.detail.localizedCaseInsensitiveContains(query) ||
-            $0.searchNames.contains { $0.localizedCaseInsensitiveContains(query) }
+            $0.detail.localizedCaseInsensitiveContains(query)
         } ?? []
     }
 
@@ -755,8 +761,26 @@ private final class TerminalConsole {
                 let state = $0.enabled ? localized("已启用", "On") : localized("已停用", "Off")
                 return CommandChoice($0.title, state, ["presets", action, $0.name], isValue: true)
             }
+        case "edit": return presetEditorChoices(groups, matching: tail)
         default: return []
         }
+    }
+
+    private func presetEditorChoices(_ groups: [RuleCollection], matching input: String) -> [CommandChoice] {
+        let argument = nextArgument(input)
+        let literalName = argument?.value == "--"
+        let query = completionQuery(literalName ? argument?.tail ?? "" : input)
+        let choices = groups.filter { $0.matchesSearch(query) }.map { group in
+            let escapeName = literalName || group.name == newPresetOption || group.name == "--"
+            let arguments = presetEditCommand + (escapeName ? ["--", group.name] : [group.name])
+            return CommandChoice(group.title, group.target.displayName, arguments, isValue: true)
+        }
+        let names = [newPresetOption, "新建预设", "New preset"]
+        guard !literalName, query.isEmpty || names.contains(where: { $0.localizedCaseInsensitiveContains(query) }) else {
+            return choices
+        }
+        let new = CommandChoice(localized("新建预设", "New preset"), "", presetEditCommand + [newPresetOption], isValue: true)
+        return query == newPresetOption ? [new] : choices + [new]
     }
 
     private func handle(_ key: ConsoleKey) {
@@ -945,10 +969,15 @@ private final class TerminalConsole {
             deselectedIndex = previous.deselectedIndex
             pageIndex = previous.page
         } else {
+            let returnCommand = form?.returnCommand
             form = nil
             pageIndex = formOriginPage
-            draft.replace("")
-            edited()
+            if let returnCommand {
+                setCommandDraft(returnCommand)
+            } else {
+                draft.replace("")
+                edited()
+            }
         }
     }
 
@@ -1227,7 +1256,7 @@ private final class TerminalConsole {
                     [localized("PF 防护", "PF protection"), firewall],
                     [localized("开机自启", "Start at boot"), boot]]
         if let system {
-            rows.append([localized("部署状态", "Deployment"), protectionPhaseText(system.phase)])
+            rows.append([localized("部署状态", "Deployment"), protectionPhaseText(system)])
             if let node = system.selectedNode { rows.append([localized("系统节点", "System node"), terminalText(node)]) }
             if let automatic = system.automaticSelection { rows.append(selectionField(automatic)) }
             if let seconds = system.secondsLeft { rows.append([localized("回退倒计时", "Rollback in"), localized("约 \(seconds) 秒", "About \(seconds) seconds")]) }
@@ -1477,8 +1506,14 @@ private final class TerminalConsole {
             return localized("Enter 显示选项", "Enter for options")
         }
         switch draft.text.trimmingCharacters(in: .whitespaces) {
+        case "/nodes group", "/setup upstream":
+            return localized("Enter 打开编辑页", "Enter Open editor")
+        case "/setup", "/setup import":
+            return localized("输入文件路径  Enter 打开导入引导", "Type a file path  Enter for guided import")
         case "/rules add":
             return localized("输入域名或 IP/CIDR  Enter 打开引导", "Type a domain or IP/CIDR  Enter for guided entry")
+        case "/rules remove" where removableRules?.isEmpty == true:
+            return localized("暂无可移除的规则", "No rules to remove")
         case "/rules remove":
             return localized("Enter 选择已有规则", "Enter to choose an existing rule")
         default:
@@ -1530,8 +1565,14 @@ private final class TerminalConsole {
         lastPage = 0
         let prompt = canvas.composerRow
         if prompt > 2 {
-            let line = choices[safe: visibleChoiceIndex]?.title ?? form?.prompt ?? resultTable?.rows.first?.first ?? result.first?.text ?? resultTitle ?? overviewTitle
-            canvas.draw(line, at: 2, ink: .title)
+            if let choice = choices[safe: visibleChoiceIndex] {
+                let selected = selection != nil
+                let label = form == nil && argumentContext == nil ? "/" + choice.title : choice.title
+                canvas.draw((selected ? "› " : "  ") + label, at: 2, ink: selected ? .title : .muted)
+            } else {
+                let line = form?.prompt ?? resultTable?.rows.first?.first ?? result.first?.text ?? resultTitle ?? overviewTitle
+                canvas.draw(line, at: 2, ink: .title)
+            }
         }
         if prompt > 1 { canvas.versionBadge(at: 1) }
         canvas.draw("›", at: prompt, ink: .title)
@@ -1764,7 +1805,8 @@ private extension TerminalConsole {
             guard profile != nil else { throw addNodesFirst }
             setCommandDraft(arguments)
         case _ where arguments.first == "presets" && arguments.count > 1 && profile == nil: throw addNodesFirst
-        case ["presets", "edit"]: try editPresets()
+        case _ where arguments.starts(with: presetEditCommand):
+            try openPresetEditor(arguments.dropFirst(presetEditCommand.count))
         case _ where arguments.count == 3 && arguments.starts(with: ["presets", "route"]):
             guard let profile else { throw addNodesFirst }
             let group = try routingPreset(arguments[2], profile: profile)
@@ -1875,18 +1917,19 @@ private extension TerminalConsole {
         present(ConsoleForm(title: title, prompt: localized("选择出站。", "Choose an outbound."), choices: choices))
     }
 
-    func editPresets() throws {
+    func openPresetEditor(_ selection: ArraySlice<String>) throws {
         guard let profile else { throw addNodesFirst }
-        var choices = profile.routing.collections.map { group in
-            FormChoice(title: group.title, detail: group.target.displayName, searchNames: group.searchNames) { console in
-                console.editPreset(group)
+        if selection.isEmpty || selection == ["--"] {
+            setCommandDraft(presetEditCommand + selection)
+        } else if selection == [newPresetOption] {
+            createPreset(profile)
+        } else {
+            let names = selection.first == "--" ? selection.dropFirst() : selection
+            guard names.count == 1, let name = names.first else {
+                throw UserError(localized("用 /presets edit 选择一个预设。", "Choose a preset from the /presets edit list."))
             }
+            editPreset(try routingPreset(name, profile: profile))
         }
-        choices.append(FormChoice(title: localized("新建预设", "New preset")) { console in
-            console.createPreset(profile)
-        })
-        present(ConsoleForm(title: localized("编辑预设", "Edit presets"),
-                            prompt: localized("选择已有预设或新建。", "Choose an existing preset or create one."), choices: choices))
     }
 
     func editPreset(_ group: RuleCollection) {
@@ -1920,7 +1963,8 @@ private extension TerminalConsole {
                 })
             })
         }
-        present(ConsoleForm(title: group.title, prompt: localized("选择要修改的内容。", "Choose what to edit."), choices: actions))
+        present(ConsoleForm(title: group.title, prompt: localized("选择要修改的内容。", "Choose what to edit."),
+                            choices: actions, returnCommand: presetEditCommand))
     }
 
     func routingPreset(_ name: String, profile: ManagedProfile) throws -> RuleCollection {
@@ -1959,7 +2003,7 @@ private extension TerminalConsole {
                     console.dispatch(["presets", "create", name, target.rawValue] + members)
                 }))
             }
-        }))
+        }, returnCommand: presetEditCommand))
     }
 
     func ruleValue(_ value: String) throws -> String {

@@ -551,13 +551,22 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"/rules add fixed.test IPv6\r\r", "fixed.test  →  Node · 美国 IPv6", wait_for_input=True)
         type_keys('/rules remove fixed.test "node:美国 IPv6"\r\r'.encode(), "Removed", wait_for_input=True)
         form_start = len(result)
-        type_keys(b"/presets edit\r\r", "Choose an existing preset or create one.")
+        type_keys(b"/presets edit\r", b"H/presets edit ", wait_for_input=True)
+        edit_choices = result.rsplit(b"\x1b[2J", 1)[-1]
+        assert b"Routing presets" in edit_choices and b"New preset" in edit_choices
+        assert_reselection("› Claude")
+        type_keys(b"\r", b"H/presets edit claude ", wait_for_input=True)
+        assert b"Choose what to edit." not in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\r", "Choose what to edit.")
         type_keys(b"\r", "Enter a domain or IP/CIDR.")
         type_keys(b"\x1b", "Choose what to edit.")
         type_keys(b"\x1b", "Enter or ↑↓ to select  Esc Back", wait_for_input=True)
-        type_keys(b"\x1b", "Choose an existing preset or create one.")
-        type_keys(b"New preset\r", "Enter a preset name.")
+        type_keys(b"\x1b", b"H/presets edit ", wait_for_input=True)
+        assert b"New preset" in result.rsplit(b"\x1b[2J", 1)[-1]
+        type_keys(b"New preset\r", b"H/presets edit --new ", wait_for_input=True)
+        type_keys(b"\r", "Enter a preset name.")
+        type_keys(b"\x1b", b"H/presets edit ", wait_for_input=True)
+        type_keys(b"New preset\r\r", "Enter a preset name.")
         type_keys(b"Fixture collection\r", "Default proxy group")
         type_keys(b"\x1b[B\r", "Enter the first domain")
         complete_form(b"wizard.test\r", "Preset saved.")
@@ -567,22 +576,31 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert_reselection("› Direct")
         type_keys(b"\x03", "Type / for commands", wait_for_input=True)
 
-        type_keys(b"/presets edit\r\r", "Choose an existing preset or create one.")
-        type_keys(b"Fixture\r", "Choose what to edit.")
+        type_keys(b"/presets edit Fixture\r\r", "Choose what to edit.")
         type_keys(b"Add\r", "Enter a domain or IP/CIDR.")
         complete_form(b"companion.test\r", "Preset saved.")
-        type_keys(b"/presets edit\r\r", "Choose an existing preset or create one.")
-        type_keys(b"Fixture\r", "Choose what to edit.")
+        type_keys(b"/presets edit Fixture\r\r", "Choose what to edit.")
         type_keys(b"Remove\r", "Choose a member to remove.")
         complete_form(b"companion\r", "Preset saved.")
         groups = json.loads(subprocess.check_output(command + ["presets", "--json"], timeout=8))
         assert next(group for group in groups if group["name"] == "Fixture collection")["domains"] == ["wizard.test"]
-        type_keys(b"/presets edit\r\r", "Choose an existing preset or create one.", wait_for_input=True)
-        type_keys(b"Fixture\r", "Delete preset", wait_for_input=True)
+        type_keys(b"/presets edit Fixture\r\r", "Delete preset", wait_for_input=True)
         type_keys(b"Delete\r", "› Cancel", wait_for_input=True)
         type_keys(b"\x1b[B\r", "Preset deleted.", wait_for_input=True)
         groups = json.loads(subprocess.check_output(command + ["presets", "--json"], timeout=8))
         assert all(group["name"] != "Fixture collection" for group in groups)
+        subprocess.run(command + ["presets", "create", "--new", "proxy"], check=True, capture_output=True, timeout=8)
+        type_keys(b"/presets \r", "--new", wait_for_input=True)
+        type_keys(b"/presets edit --new\r", b"H/presets edit --new ", wait_for_input=True)
+        assert b"Esc Previous input" in result.rsplit(b"\x1b[2J", 1)[-1]
+        type_keys(b"\r", "Enter a preset name.", wait_for_input=True)
+        type_keys(b"\x1b", b"H/presets edit ", wait_for_input=True)
+        type_keys(b"\x03", "Type / for commands", wait_for_input=True)
+        type_keys(b"/presets edit -- --new\r", b"H/presets edit -- --new ", wait_for_input=True)
+        type_keys(b"\r", "Choose what to edit.", wait_for_input=True)
+        type_keys(b"\x1b\x1b", b"H/presets edit ", wait_for_input=True)
+        type_keys(b"\x03", "Type / for commands", wait_for_input=True)
+        subprocess.run(command + ["presets", "delete", "--new"], check=True, capture_output=True, timeout=8)
 
         type_keys(b"/rules add\r\r", "Enter a domain or IP/CIDR.")
         type_keys(b"form.test\r", b"H/rules add form.test ", wait_for_input=True)
@@ -682,6 +700,47 @@ def tty_smoke(command, port, fetch, health, source, preview):
         for leaf in (b"status", b"help", b"quit"):
             assert b"/" + leaf + b" " in catalog, leaf
         assert b"/help system" not in catalog
+
+        completion_cases = {
+            b"/status": b"Enter Run",
+            b"/nodes": b"Add share links from clipboard",
+            b"/nodes add": b"Enter Run",
+            b"/nodes group": b"Enter Open editor",
+            b"/use": b"Matching nodes",
+            b"/use --auto": b"Enter Run",
+            b"/check": b"Check a specific node",
+            b"/check node": b"Matching nodes",
+            b"/rules": b"Choose where unmatched traffic goes",
+            b"/rules add": b"Type a domain or IP/CIDR",
+            b"/rules remove": b"No rules to remove",
+            b"/rules default": b"Outbounds",
+            b"/presets": b"Enable a preset",
+            b"/presets enable": "› Claude".encode(),
+            b"/presets disable": "› Claude".encode(),
+            b"/presets route": "› Claude".encode(),
+            b"/presets edit": b"New preset",
+            b"/setup": b"Import nodes from a sing-box JSON file",
+            b"/setup import": b"Type a file path",
+            b"/setup upstream": b"Enter Open editor",
+            b"/system": b"Verify and start the system proxy",
+            **{b"/system " + action: b"Enter Run" for action in system_actions},
+            b"/lang": b"Language",
+            b"/lang zh": b"Enter Run",
+            b"/lang en": b"Enter Run",
+            b"/help": b"Enter Run",
+            b"/quit": b"Enter Run",
+        }
+        command_cell = rb"\x1b\[\d+;8H(?:\x1b\[[0-9;]*m)*(/[a-z]+(?: (?:--)?[a-z]+)?) {2,}"
+        catalogued = set(re.findall(command_cell, catalog))
+        covered = completion_cases.keys()
+        assert catalogued == covered, (catalogued - covered, covered - catalogued)
+        type_keys(b"\x1b", "Proxy overview", wait_for_input=True)
+        for path, next_step in completion_cases.items():
+            for key in (b"\r", b"\t"):
+                type_keys(path + key, b"H" + path + b" ", wait_for_input=True)
+                assert next_step in result.rsplit(b"\x1b[2J", 1)[-1], (path, key, next_step)
+                type_keys(b"\x03", "Type / for commands", wait_for_input=True)
+
         type_keys(b"/help system\r", "Use /help to open the command catalog.", wait_for_input=True)
         type_keys(b"/system\r", b"\x1b[26;9H/system ", wait_for_input=True)
         system_menu = result.rsplit(b"\x1b[2J", 1)[-1]
@@ -749,6 +808,15 @@ def tty_smoke(command, port, fetch, health, source, preview):
         capture = restarted.splitlines()[0].partition(" · ")[0]
         assert capture == "System capture is off" and "Local profile ready" in restarted
         type_keys(b"/lang zh\r\r", "代理概览")
+
+        offset = len(result)
+        resize(44, 9)
+        expect(b"\x1b[8;5H\x1b[?25h", after=offset)
+        type_keys(b"/", "› /status", wait_for_input=True)
+        type_keys(b"\x1b", "  /status", wait_for_input=True)
+        assert "› /status".encode() not in result.rsplit(b"\x1b[2J", 1)[-1]
+        type_keys(b"\r", "› /status", wait_for_input=True)
+        type_keys(b"\x1b\x1b", "代理概览", wait_for_input=True)
 
         offset = len(result)
         resize(44, 11)

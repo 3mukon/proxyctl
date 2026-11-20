@@ -73,22 +73,25 @@ func systemCaptureText(_ status: ProtectionStatus?) -> String {
     return localized("全机接管未启用", "System capture is off")
 }
 
-func protectionPhaseText(_ phase: ProtectionPhase) -> String {
+func protectionPhaseText(_ status: ProtectionStatus) -> String {
+    if status.phase == .prepared && status.verified == true {
+        return localized("已验证，可以启动", "Verified and ready to start")
+    }
     let names: [ProtectionPhase: String] = [
         .prepared: localized("已准备，等待试用", "Ready for trial"),
         .tunnelTrial: localized("TUN 试用中", "TUN trial"),
         .firewallTesting: localized("PF 正在验证", "Testing PF"),
         .firewallTrial: localized("PF 试用中", "PF trial"),
         .starting: localized("正在启动", "Starting"),
-        .protected: localized("已保留", "Protected"),
+        .protected: localized("试用通过，已确认启用", "Trial passed and deployment confirmed"),
         .rollingBack: localized("正在回退", "Rolling back")
     ]
-    return names[phase] ?? phase.rawValue
+    return names[status.phase] ?? status.phase.rawValue
 }
 
 func systemStatusLines(_ status: ProtectionStatus) -> [String] {
     let firewall = status.firewallLoaded ? localized("已加载", "Loaded") : localized("未加载", "Not loaded")
-    var lines = [systemCaptureText(status) + " · " + protectionPhaseText(status.phase),
+    var lines = [systemCaptureText(status) + " · " + protectionPhaseText(status),
                  localized("独立 PF    ", "Independent PF ") + firewall]
     if let boot = status.startsAtBoot {
         lines.append(boot ? localized("开机自启   已启用", "Start at boot   On") : localized("开机自启   已停用", "Start at boot   Off"))
