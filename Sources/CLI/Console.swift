@@ -8,15 +8,17 @@ private struct CommandChoice {
     let needsArgument: Bool
     let isValue: Bool
     let help: String
+    let panelTitle: String?
 
     init(_ title: String, _ detail: String, _ arguments: [String]? = nil, needsArgument: Bool = false,
-         isValue: Bool = false, help: String? = nil) {
+         isValue: Bool = false, help: String? = nil, panelTitle: String? = nil) {
         self.title = title
         self.detail = detail
         self.arguments = arguments ?? [title]
         self.needsArgument = needsArgument
         self.isValue = isValue
         self.help = help ?? detail
+        self.panelTitle = panelTitle
     }
 }
 
@@ -81,7 +83,7 @@ private func commandOptions(for command: String) -> [CommandChoice] {
         ]
     case "check":
         return [
-            .init("node", localized("检测指定节点", "Check a specific node"), ["check", "node"],
+            .init("node", localized("检测指定节点", "Check a specific node"), ["check", "node"], needsArgument: true,
                   help: localized("从已导入节点中选择一个，隔离检测其转发。", "Choose an imported node and test its forwarding in isolation."))
         ]
     case "rules":
@@ -89,7 +91,7 @@ private func commandOptions(for command: String) -> [CommandChoice] {
             .init("add", localized("添加分流规则", "Add a routing rule"), ["rules", "add"],
                   help: localized("为域名后缀、IP 地址或 CIDR 网段选择出口。",
                                   "Choose an outbound for a domain suffix, IP address, or CIDR range.")),
-            .init("remove", localized("移除分流规则", "Remove a routing rule"), ["rules", "remove"],
+            .init("remove", localized("移除分流规则", "Remove a routing rule"), ["rules", "remove"], needsArgument: true,
                   help: localized("从已有分流规则中选择要移除的一条。", "Select an existing routing rule to remove.")),
             .init("default", localized("设置其余流量的出口", "Choose where unmatched traffic goes"), ["rules", "default"], needsArgument: true,
                   help: localized("为未匹配分流规则的流量选择出口。可选直连、默认代理组、指定节点或外部代理。首次使用外部代理可在这里填写地址。",
@@ -163,8 +165,8 @@ func consoleHelpRows(_ arguments: [String]) throws -> [[String]] {
 }
 
 var consoleHelpTips: [String] {
-    [localized("输入 / 打开命令菜单。用 ↑↓ 选择，按 Tab 或 Enter 补全。",
-               "Type / for commands. Use ↑↓ to select and Tab or Enter to complete."),
+    [localized("输入 / 打开命令菜单。用 ↑↓ 选择，按 Tab 或 Enter 补全。选项填好后按 Enter 执行。",
+               "Type / for commands. Use ↑↓ to select and Tab or Enter to complete. Press Enter to run the completed command."),
      localized("Esc 每次退一步，可以取消高亮、收起补全、撤回输入或退出当前页。",
                "Esc goes back one step at a time through selections, completions, input, and pages."),
      localized("运行 proxyctl help 查看其他终端命令。", "Run proxyctl help for other shell commands.")]
@@ -203,6 +205,21 @@ private var childEnvironment: [String: String] {
 private func quoted(_ value: String) -> String {
     if !value.isEmpty && !value.contains(where: { $0.isWhitespace || $0 == "\"" || $0 == "'" || $0 == "\\" }) { return value }
     return "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+}
+
+private func nextArgument(_ input: String) -> (value: String, tail: String)? {
+    guard let word = (try? commandTokens(input, allowingIncomplete: true))?.first,
+          word.end < input.endIndex else { return nil }
+    return (word.value, String(input[word.end...].drop(while: \.isWhitespace)))
+}
+
+private func completionQuery(_ input: String) -> String {
+    let query = input.trimmingCharacters(in: .whitespaces)
+    if query.first == "\"" || query.first == "'",
+       let tokens = try? commandTokens(query, allowingIncomplete: true), tokens.count == 1 {
+        return tokens[0].value
+    }
+    return query
 }
 
 private enum Ink: String {
@@ -518,6 +535,7 @@ private final class TerminalConsole {
     private var deselectedIndex: Int?
     private var completedArgumentCount = 0
     private var dismissed = false
+    private var removableRules: [CustomRule]?
     private var form: ConsoleForm?
     private var formHistory: [(form: ConsoleForm, draft: Draft, selection: Int?, deselectedIndex: Int?, page: Int)] = []
     private var formOriginPage = 0
@@ -575,7 +593,8 @@ private final class TerminalConsole {
     }
 
     private var requiresCompletion: Bool {
-        guard draft.text.hasPrefix("/"), var arguments = try? parseLine(draft.text), let first = arguments.first else { return false }
+        guard draft.text.hasPrefix("/") else { return false }
+        guard var arguments = try? parseLine(draft.text), let first = arguments.first else { return !suggestions.isEmpty }
         let command = consoleCommand(first)
         arguments[0] = command
         if command == "presets", let name = arguments[safe: 2], let groups = profile?.routing.collections,
@@ -628,55 +647,78 @@ private final class TerminalConsole {
         }
         switch first {
         case "lang":
+            let query = completionQuery(argument)
             return commandOptions(for: first).filter {
-                $0.arguments.last?.hasPrefix(argument.lowercased()) == true ||
-                    $0.title.localizedCaseInsensitiveContains(argument)
+                $0.arguments.last?.hasPrefix(query.lowercased()) == true ||
+                    $0.title.localizedCaseInsensitiveContains(query)
             }
         case "presets":
-            return profile.map { presetChoices(argument, profile: $0) } ?? []
+            return presetChoices(argument)
         case "rules":
             return ruleChoices(argument)
+        case "check":
+            if let (action, tail) = nextArgument(argument), action == "node" {
+                return nodeChoices(profile?.nodes ?? [], matching: completionQuery(tail), command: [first, action])
+            }
         case "use":
-            break
-        default:
-            return commandOptions(for: first).filter { $0.title.hasPrefix(argument.lowercased()) }
+            let order = activeSystem?.order ?? profile?.order ?? []
+            let nodes = activeSystem?.nodes ?? profile?.nodes ?? []
+            let orderedNodes = order.compactMap { name in nodes.first { $0.name == name } }
+            let query = completionQuery(argument)
+            return nodeChoices(orderedNodes, matching: query, command: [first], selected: displayedSelectedNode) +
+                commandOptions(for: first).filter { $0.title.hasPrefix(query.lowercased()) }
+        default: break
         }
-        let order = activeSystem?.order ?? profile?.order ?? []
-        let nodes = activeSystem?.nodes ?? profile?.nodes ?? []
-        let selected = displayedSelectedNode
-        let query = argument.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        let choices = order.compactMap { name -> CommandChoice? in
-            guard query.isEmpty || name.localizedCaseInsensitiveContains(query),
-                  let node = nodes.first(where: { $0.name == name }) else { return nil }
-            let marker = selected == name ? localized("当前 · ", "Current · ") : ""
+        return commandOptions(for: first).filter { $0.title.hasPrefix(argument.lowercased()) }
+    }
+
+    private func nodeChoices(_ nodes: [Node], matching query: String, command: [String],
+                             selected: String? = nil) -> [CommandChoice] {
+        nodes.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }.map { node in
+            let marker = selected == node.name ? localized("当前 · ", "Current · ") : ""
             let endpoint = node.endpoint == "域名" ? localized("域名", "Hostname") : node.endpoint
-            return CommandChoice(terminalText(name), marker + "\(node.protocolName) / \(endpoint)", [first, name], isValue: true)
+            return CommandChoice(terminalText(node.name), marker + "\(node.protocolName) / \(endpoint)",
+                                 command + [node.name], isValue: true, panelTitle: localized("匹配节点", "Matching nodes"))
         }
-        return choices + commandOptions(for: first).filter { $0.title.hasPrefix(query) }
     }
 
     private func ruleChoices(_ input: String) -> [CommandChoice] {
-        let words = input.split(maxSplits: 2, whereSeparator: \.isWhitespace)
-        let current = activeSystem == nil ? profile?.routing.fallback : activeSystem?.fallback
-        if words.first == "default", input.contains(where: \.isWhitespace) {
-            let query = String(input.dropFirst("default".count))
+        guard let (action, tail) = nextArgument(input) else {
+            return commandOptions(for: "rules").filter { $0.title.hasPrefix(input.lowercased()) }
+        }
+        switch action {
+        case "default":
+            let current = activeSystem == nil ? profile?.routing.fallback : activeSystem?.fallback
             let targets = outboundOptions(nodeNames: profile?.nodes.map(\.name) ?? [], hasUpstream: true)
-            return outboundChoices(targets, matching: query, command: ["rules", "default"], current: current,
+            return outboundChoices(targets, matching: tail, command: ["rules", action], current: current,
                                    needsUpstreamAddress: profile?.upstream == nil)
-        }
-        if words.count >= 2, ["add", "remove"].contains(words[0]), input.contains(where: \.isWhitespace) {
-            let tail = words.dropFirst(2).first.map(String.init) ?? ""
-            let match = (try? parseLine(String(words[1])))?.first ?? String(words[1])
+        case "add":
+            guard let (value, query) = nextArgument(tail), let match = try? ruleValue(value) else { return [] }
             let available = activeSystem.map { $0.nodeRuleTargets ?? [] } ?? profile?.nodes.map(\.name) ?? []
-            let common = RuleTarget.standard.filter { $0 != .upstream || ruleUpstreamAvailable || words.first == "remove" }
-            return outboundChoices(common + available.map(RuleTarget.node), matching: tail, command: ["rules", String(words[0]), match])
+            let targets = outboundOptions(nodeNames: available, hasUpstream: ruleUpstreamAvailable)
+            return outboundChoices(targets, matching: query, command: ["rules", action, match])
+        case "remove": return ruleRemovalChoices(tail)
+        default: return []
         }
-        return commandOptions(for: "rules").filter { $0.title.hasPrefix(input.lowercased()) }
+    }
+
+    private func ruleRemovalChoices(_ input: String) -> [CommandChoice] {
+        let rules = removableRules ?? []
+        let command = ["rules", "remove"]
+        if let (value, query) = nextArgument(input), let match = try? ruleValue(value) {
+            let targets = rules.filter { $0.value == match }.map(\.target)
+            return outboundChoices(targets, matching: query, command: command + [match])
+        }
+        let query = completionQuery(input)
+        return rules.filter { query.isEmpty || $0.value.localizedCaseInsensitiveContains(query) }.map { rule in
+            CommandChoice(rule.value, rule.target.displayName, command + [rule.value, rule.target.rawValue],
+                          isValue: true, panelTitle: localized("现有规则", "Existing rules"))
+        }
     }
 
     private func outboundChoices(_ targets: [RuleTarget], matching input: String, command: [String],
                                  current: RuleTarget? = nil, needsUpstreamAddress: Bool = false) -> [CommandChoice] {
-        let query = input.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        let query = completionQuery(input)
         return targets.filter {
             query.isEmpty || $0.rawValue.lowercased().hasPrefix(query.lowercased()) ||
                 $0.displayName.localizedCaseInsensitiveContains(query)
@@ -685,37 +727,36 @@ private final class TerminalConsole {
             if $0 == .upstream && needsUpstreamAddress {
                 detail = localized("填写地址后使用", "Enter an address to use it")
             }
-            return CommandChoice($0.displayName, detail, command + [$0.rawValue], isValue: true)
+            return CommandChoice($0.displayName, detail, command + [$0.rawValue], isValue: true,
+                                 panelTitle: localized("出口", "Outbounds"))
         }
     }
 
-    private func presetChoices(_ input: String, profile: ManagedProfile) -> [CommandChoice] {
+    private func presetChoices(_ input: String) -> [CommandChoice] {
+        guard let (action, tail) = nextArgument(input) else {
+            return commandOptions(for: "presets").filter { $0.title.hasPrefix(input.lowercased()) }
+        }
+        guard let profile else { return [] }
         let groups = profile.routing.collections
-        let action = input.split(maxSplits: 1, whereSeparator: \.isWhitespace)
-        let tail = action.dropFirst().first.map(String.init) ?? ""
-        if action.first == "route", input.contains(where: \.isWhitespace) {
-            for name in groups.flatMap(\.lookupNames) {
-                guard let prefix = tail.range(of: quoted(name) + " ", options: [.anchored, .caseInsensitive]),
-                      let index = RuleCollection.index(matching: name, in: groups) else { continue }
+        let query = completionQuery(tail)
+        switch action {
+        case "route":
+            if let (name, target) = nextArgument(tail), let index = RuleCollection.index(matching: name, in: groups) {
                 let group = groups[index]
                 let targets = outboundOptions(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil,
                                               proxyOnly: group.builtIn)
-                return outboundChoices(targets, matching: String(tail[prefix.upperBound...]),
-                                       command: ["presets", "route", group.name], current: group.target)
+                return outboundChoices(targets, matching: target, command: ["presets", action, group.name], current: group.target)
             }
-            let query = tail.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
             return groups.filter { $0.matchesSearch(query) }.map {
-                CommandChoice($0.title, $0.target.displayName, ["presets", "route", $0.name], needsArgument: true, isValue: true)
+                CommandChoice($0.title, $0.target.displayName, ["presets", action, $0.name], needsArgument: true, isValue: true)
             }
-        }
-        if let first = action.first, ["enable", "disable"].contains(first), input.contains(where: \.isWhitespace) {
-            let query = tail.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        case "enable", "disable":
             return groups.filter { $0.matchesSearch(query) }.map {
                 let state = $0.enabled ? localized("已启用", "On") : localized("已停用", "Off")
-                return CommandChoice($0.title, state, ["presets", String(first), $0.name], isValue: true)
+                return CommandChoice($0.title, state, ["presets", action, $0.name], isValue: true)
             }
+        default: return []
         }
-        return commandOptions(for: "presets").filter { $0.title.hasPrefix(input.lowercased()) }
     }
 
     private func handle(_ key: ConsoleKey) {
@@ -807,8 +848,10 @@ private final class TerminalConsole {
 
     private var precedingCommandInput: String {
         if historyIndex != nil { return historyDraft }
-        guard draft.text.hasPrefix("/"), let words = try? parseLine(draft.text), words.count > 1 else { return "" }
-        return words.dropLast().map(quoted).joined(separator: " ") + " "
+        let input = draft.text
+        guard input.hasPrefix("/"), let words = try? commandTokens(input, allowingIncomplete: true),
+              let previous = words.dropLast().last else { return "" }
+        return String(input[..<previous.end]) + " "
     }
 
     private func reopenCompletions() -> Bool {
@@ -833,11 +876,20 @@ private final class TerminalConsole {
         selection = selectFirst && !ready ? 0 : nil
         deselectedIndex = nil
         dismissed = false
+        if form == nil, let (command, argument) = argumentContext, command == "rules", nextArgument(argument)?.value == "remove" {
+            if removableRules == nil && activeSystem == nil { removableRules = try? localRuleDetails().rules }
+        } else {
+            removableRules = nil
+        }
+    }
+
+    private func setCommandDraft(_ arguments: [String]) {
+        draft.replace("/" + arguments.map(quoted).joined(separator: " ") + " ")
+        edited()
     }
 
     private func complete(_ choice: CommandChoice) {
-        draft.replace("/" + choice.arguments.map(quoted).joined(separator: " ") + " ")
-        edited()
+        setCommandDraft(choice.arguments)
         completedArgumentCount = choice.arguments.count
         selection = choice.needsArgument ? 0 : nil
     }
@@ -921,8 +973,7 @@ private final class TerminalConsole {
         default: break
         }
         if arguments == ["rules", "default"] {
-            draft.replace("/rules default ")
-            edited()
+            setCommandDraft(arguments)
             return
         }
         if arguments.starts(with: ["nodes", "add"]), arguments.count > 2 {
@@ -1079,8 +1130,7 @@ private final class TerminalConsole {
 
     private func chooseLanguage(_ arguments: [String]) {
         if arguments.isEmpty {
-            draft.replace("/lang ")
-            edited()
+            setCommandDraft(["lang"])
             return
         }
         do {
@@ -1414,15 +1464,24 @@ private final class TerminalConsole {
     }
 
     private var inputHint: String {
+        if let (command, argument) = argumentContext, command == "rules", let (action, tail) = nextArgument(argument) {
+            let following = nextArgument(tail)
+            if action == "remove", activeSystem != nil, removableRules == nil, (following?.tail ?? "").isEmpty {
+                return localized("Enter 读取系统规则", "Enter to load system rules")
+            }
+            if action == "add", following == nil, !tail.isEmpty, (try? ruleValue(completionQuery(tail))) != nil {
+                return localized("Enter 选择出口", "Enter to choose an outbound")
+            }
+        }
+        if dismissed && historyIndex == nil && requiresCompletion {
+            return localized("Enter 显示选项", "Enter for options")
+        }
         switch draft.text.trimmingCharacters(in: .whitespaces) {
         case "/rules add":
             return localized("输入域名或 IP/CIDR  Enter 打开引导", "Type a domain or IP/CIDR  Enter for guided entry")
         case "/rules remove":
             return localized("Enter 选择已有规则", "Enter to choose an existing rule")
         default:
-            if dismissed && historyIndex == nil && requiresCompletion {
-                return localized("Enter 显示选项", "Enter for options")
-            }
             return localized("Enter 执行", "Enter Run")
         }
     }
@@ -1552,11 +1611,13 @@ private final class TerminalConsole {
                                top: Int, bottom: Int, framed: Bool, isArgument: Bool) {
         let page = Page(total: available.count, capacity: capacity, index: visibleChoiceIndex / capacity)
         var caption = localized("命令", "Commands")
-        if isArgument {
-            if draft.text.hasPrefix("/lang ") { caption = localized("语言", "Language") }
-            else if draft.text.hasPrefix("/presets ") { caption = localized("分流预设", "Routing presets") }
-            else if draft.text.hasPrefix("/use ") { caption = localized("匹配节点", "Matching nodes") }
-            else if draft.text.hasPrefix("/system ") { caption = localized("系统代理", "System proxy") }
+        if let title = available.first?.panelTitle {
+            caption = title
+        } else if isArgument, let (command, _) = argumentContext {
+            if command == "lang" { caption = localized("语言", "Language") }
+            else if command == "presets" { caption = localized("分流预设", "Routing presets") }
+            else if command == "use" { caption = localized("匹配节点", "Matching nodes") }
+            else if command == "system" { caption = localized("系统代理", "System proxy") }
             else { caption = localized("后续选项", "Next options") }
         }
         if page.count > 1 { caption += "  " + page.label }
@@ -1699,10 +1760,21 @@ private extension TerminalConsole {
             guard FileManager.default.fileExists(atPath: paths.config.path) else { throw addNodesFirst }
             let local = try ManagedProfile(paths.config)
             editDefaultGroup(local, order: local.order)
-        case ["check", "node"]: try checkNodeForm()
+        case ["check", "node"]:
+            guard profile != nil else { throw addNodesFirst }
+            setCommandDraft(arguments)
+        case _ where arguments.first == "presets" && arguments.count > 1 && profile == nil: throw addNodesFirst
         case ["presets", "edit"]: try editPresets()
+        case _ where arguments.count == 3 && arguments.starts(with: ["presets", "route"]):
+            guard let profile else { throw addNodesFirst }
+            let group = try routingPreset(arguments[2], profile: profile)
+            setCommandDraft(["presets", "route", group.name])
         case ["rules", "add"]: try addRuleForm()
-        case ["rules", "remove"]: try removeRuleForm()
+        case _ where arguments.count == 3 && arguments.starts(with: ["rules", "add"]):
+            guard profile != nil || activeSystem != nil else { throw addNodesFirst }
+            setCommandDraft(["rules", "add", try ruleValue(arguments[2])])
+        case _ where (2...3).contains(arguments.count) && arguments.starts(with: ["rules", "remove"]):
+            try loadRuleRemovalChoices(arguments)
         case ["setup", "upstream"], ["rules", "upstream"]: try editUpstream()
         case ["rules", "default", "upstream"] where profile?.upstream == nil: try upstreamForm(useForUnmatched: true)
         case ["system", "start"]:
@@ -1728,25 +1800,9 @@ private extension TerminalConsole {
             showResult("›  " + runningLabel,
                        lines: [ConsoleLine(localized("正在通过当前网络检查出站。", "Checking outbounds on the current network."), .muted)])
         default:
-            if arguments.count == 3 && arguments.starts(with: ["presets", "route"]) {
-                try changePresetOutbound(arguments[2])
-            } else {
-                return try setupForm(arguments)
-            }
+            return try setupForm(arguments)
         }
         return true
-    }
-
-    func checkNodeForm() throws {
-        guard let profile else { throw addNodesFirst }
-        let choices = profile.nodes.map { node in
-            let endpoint = node.endpoint == "域名" ? localized("域名", "Hostname") : node.endpoint
-            return FormChoice(title: terminalText(node.name), detail: "\(node.protocolName) / \(endpoint)") { console in
-                console.dispatch(["check", "node", node.name])
-            }
-        }
-        present(ConsoleForm(title: localized("检测本机节点", "Check a local node"),
-                            prompt: localized("选择节点进行隔离检测。", "Choose a node to test in isolation."), choices: choices))
     }
 
     func editDefaultGroup(_ local: ManagedProfile, order: [String], replacing: Bool = false) {
@@ -1867,13 +1923,17 @@ private extension TerminalConsole {
         present(ConsoleForm(title: group.title, prompt: localized("选择要修改的内容。", "Choose what to edit."), choices: actions))
     }
 
-    func changePresetOutbound(_ name: String) throws {
-        guard let profile else { throw addNodesFirst }
+    func routingPreset(_ name: String, profile: ManagedProfile) throws -> RuleCollection {
         let groups = profile.routing.collections
         guard let index = RuleCollection.index(matching: name, in: groups) else {
             throw UserError(localized("未找到该预设。", "Preset not found."))
         }
-        let group = groups[index]
+        return groups[index]
+    }
+
+    func changePresetOutbound(_ name: String) throws {
+        guard let profile else { throw addNodesFirst }
+        let group = try routingPreset(name, profile: profile)
         let targets = outboundOptions(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil,
                                       proxyOnly: group.builtIn)
         chooseOutbound(group.title, targets: targets, current: group.target) { console, target in
@@ -1912,15 +1972,12 @@ private extension TerminalConsole {
         let title = localized("添加规则", "Add a rule")
         present(ConsoleForm(title: title, prompt: localized("输入域名或 IP/CIDR。", "Enter a domain or IP/CIDR."), accept: { console, value in
             let match = try console.ruleValue(value)
-            let names = console.activeSystem.map { $0.nodeRuleTargets ?? [] } ?? console.profile?.nodes.map(\.name) ?? []
-            console.chooseOutbound(title, targets: outboundOptions(nodeNames: names, hasUpstream: console.ruleUpstreamAvailable)) { console, target in
-                console.dispatch(["rules", "add", match, target.rawValue])
-            }
+            console.backFromForm()
+            console.setCommandDraft(["rules", "add", match])
         }))
     }
 
-    func removeRuleForm() throws {
-        refreshStatus()
+    func loadRuleRemovalChoices(_ arguments: [String]) throws {
         let title = localized("移除规则", "Remove rule")
         let rules: [CustomRule]
         if activeSystem != nil {
@@ -1944,16 +2001,18 @@ private extension TerminalConsole {
             showResult(title, lines: [ConsoleLine(localized("暂无自定义规则。", "No custom rules yet."), .muted)])
             return
         }
-        let choices = rules.map { rule in
-            FormChoice(title: rule.value, detail: rule.target.displayName) { console in
-                let prompt = "\(rule.value)  →  \(rule.target.displayName)"
-                console.confirmEdit(title, prompt: prompt, action: FormChoice(title: title) { console in
-                    console.dispatch(["rules", "remove", rule.value, rule.target.rawValue])
-                })
+        let command = ["rules", "remove"]
+        if let value = arguments[safe: 2] {
+            let match = try ruleValue(value)
+            guard rules.contains(where: { $0.value == match }) else {
+                throw UserError(localized("没有找到这个匹配条件的规则。", "No rule has that match."))
             }
+            removableRules = rules
+            setCommandDraft(command + [match])
+        } else {
+            removableRules = rules
+            setCommandDraft(command)
         }
-        present(ConsoleForm(title: title,
-                            prompt: localized("选择要移除的规则。", "Choose the rule to remove."), choices: choices))
     }
 
     func confirmEdit(_ title: String, prompt: String, action: FormChoice) {

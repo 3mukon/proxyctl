@@ -528,21 +528,24 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert_shortcuts(rules_frame, b"/rules add", b"/rules default")
         type_keys(b"/rules add\r", "Type a domain or IP/CIDR")
         type_keys(b"sample.test ", b"H/rules add sample.test ", wait_for_input=True)
-        assert_reselection("› Default proxy group")
+        assert_reselection("› Direct")
         type_keys(b"p", b"H/rules add sample.test p", wait_for_input=True)
         assert_reselection("› Default proxy group")
         type_keys(b"\r", b"H/rules add sample.test proxy ")
         type_keys(b"\r", "sample.test  →  Default proxy group", wait_for_input=True)
         type_keys(b"/rules remove sample.test ", b"H/rules remove sample.test ", wait_for_input=True)
+        removal_targets = result.rsplit(b"\x1b[2J", 1)[-1]
+        assert b"Outbounds" in removal_targets and b"External upstream" not in removal_targets
+        assert b"Node \xc2\xb7 " not in removal_targets and b" Direct " not in removal_targets
         assert_reselection("› Default proxy group")
         type_keys(b"\x03", "Type / for commands", wait_for_input=True)
-        type_keys(b"/rules remove\r\r", "Choose the rule to remove.", wait_for_input=True)
+        type_keys(b"/rules remove\r", b"H/rules remove ", wait_for_input=True)
         remove_frame = result.rsplit(b"\x1b[2J", 1)[-1]
-        assert b"sample.test" in remove_frame and b"Default proxy group" in remove_frame
-        type_keys(b"\r", "sample.test  →  Default proxy group", wait_for_input=True)
-        type_keys(b"\r", "Choose the rule to remove.", wait_for_input=True)
-        type_keys(b"\r", "sample.test  →  Default proxy group", wait_for_input=True)
-        type_keys(b"\x1b[B\r", "Removed", wait_for_input=True)
+        assert b"Existing rules" in remove_frame and b"Default proxy group" in remove_frame
+        assert_reselection("› sample.test")
+        type_keys(b"\r", b"H/rules remove sample.test proxy ", wait_for_input=True)
+        assert json.loads(subprocess.check_output(command + ["rules", "--json"], timeout=8))
+        type_keys(b"\r", "Removed", wait_for_input=True)
         rules_left = json.loads(subprocess.check_output(command + ["rules", "--json"], timeout=8))
         assert not rules_left
         type_keys(b"/rules add fixed.test IPv6\r\r", "fixed.test  →  Node · 美国 IPv6", wait_for_input=True)
@@ -582,8 +585,10 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert all(group["name"] != "Fixture collection" for group in groups)
 
         type_keys(b"/rules add\r\r", "Enter a domain or IP/CIDR.")
-        type_keys(b"form.test\r", "Choose an outbound.")
-        complete_form(b"IPv6\r", "form.test  →  Node · 美国 IPv6")
+        type_keys(b"form.test\r", b"H/rules add form.test ", wait_for_input=True)
+        assert b"Outbounds" in result.rsplit(b"\x1b[2J", 1)[-1]
+        type_keys(b"IPv6\r", 'H/rules add form.test "node:美国 IPv6" ', wait_for_input=True)
+        complete_form(b"\r", "form.test  →  Node · 美国 IPv6")
         complete_form('/rules remove form.test "node:美国 IPv6"\r\r'.encode(), "Removed")
         default_query = command + ["rules", "default", "--json"]
         before = json.loads(subprocess.check_output(default_query, timeout=8))
@@ -618,7 +623,8 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"\x1b", "Type / for commands", wait_for_input=True)
         assert b"\x1b[?1049l" not in result[form_start:]
 
-        type_keys('/presets route "OpenAI 服务" '.encode(), "› Default proxy group", wait_for_input=True)
+        type_keys("/presets route 'OpenAI 服务' ".encode(), "› Default proxy group", wait_for_input=True)
+        assert b"Outbounds" in result.rsplit(b"\x1b[2J", 1)[-1]
         assert_reselection("› Default proxy group")
         type_keys(b"\x03", "Type / for commands", wait_for_input=True)
         type_keys(b"/presets route open\r", "› Default proxy group", wait_for_input=True)
@@ -720,13 +726,24 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"/nodes ", "Add share links from clipboard")
         type_keys(b"\x1b", "Enter Run  Esc Clear", wait_for_input=True)
         type_keys(b"\x1b", "Type / for commands", wait_for_input=True)
-        type_keys(b"/check node\r\r", "Choose a node to test in isolation.", wait_for_input=True)
-        type_keys(b"Other", "› Other Region", wait_for_input=True)
-        type_keys(b"\x1b", "Esc Clear", wait_for_input=True)
-        type_keys(b"\x1b", "Type to filter", wait_for_input=True)
-        type_keys(b"\x1b", "Type / for commands", wait_for_input=True)
-        type_keys(f'/check node "Other Region" --url {health}\r'.encode(),
-                  "Isolated node check · Other Region", wait_for_input=True)
+        type_keys(b"/check node ", b"H/check node ", wait_for_input=True)
+        assert b"Matching nodes" in result.rsplit(b"\x1b[2J", 1)[-1]
+        type_keys(b"\x03", "Type / for commands", wait_for_input=True)
+        type_keys(b"/check \t", b"H/check node ", wait_for_input=True)
+        node_panel = result.rsplit(b"\x1b[2J", 1)[-1]
+        assert b"Matching nodes" in node_panel and b"Other Region" in node_panel
+        type_keys(b'"Other', b'H/check node "Other', wait_for_input=True)
+        assert_reselection("› Other Region")
+        type_keys(b"\x1b\x1b", "Enter for options  Esc Previous input", wait_for_input=True)
+        type_keys(b"\x1b", b"H/check node ", wait_for_input=True)
+        assert b"Matching nodes" not in result.rsplit(b"\x1b[2J", 1)[-1]
+        type_keys(b"\r", "Matching nodes", wait_for_input=True)
+        type_keys(b"Other", b"H/check node Other", wait_for_input=True)
+        assert_reselection("› Other Region")
+        type_keys(b"\r", b'H/check node "Other Region" ', wait_for_input=True)
+        completed_check = result.rsplit(b"\x1b[2J", 1)[-1]
+        assert b"Matching nodes" not in completed_check and b"Isolated node check" not in completed_check
+        type_keys(f"--url {health}\r".encode(), "Isolated node check · Other Region", wait_for_input=True)
         type_keys(f"/check --url {health}\r".encode(), "Isolated node check · 美国", wait_for_input=True)
         restarted = subprocess.check_output(command + ["status"], env=terminal_env, text=True, timeout=10)
         capture = restarted.splitlines()[0].partition(" · ")[0]

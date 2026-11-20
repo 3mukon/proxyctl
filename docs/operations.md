@@ -34,7 +34,7 @@ An application or local proxy can hand an existing proxy connection to the manag
 
 ## Custom rules and upstream
 
-Use `/rules` in the console to view custom rules and the catch-all. Choose `/rules add` for a guided domain or IP entry, or specify its outbound directly. Open `/rules remove` to select and confirm removal of a rule.
+Use `/rules` to view custom rules and the catch-all. Type a domain or IP/CIDR after `/rules add`, or press Enter to open guided entry. Both paths offer an outbound in the command menu. Completing `remove` in `/rules remove` lists the existing local rules with their outbounds. If system rules are active, press Enter to read them and complete any authentication. Select a rule and press Enter once the finished command is in the input to remove it.
 
 ```text
 /rules add example.net proxy
@@ -57,7 +57,7 @@ On an updated protected deployment, saving presets or the catch-all automaticall
 
 ## Node checks and selection
 
-`/check` or `proxyctl check` validates the running system path. Before the system tunnel starts, the same command can probe the first configured node in an isolated process. Use `/check node` in the console to select and test an imported node in isolation. Run `proxyctl check node NODE` or `proxyctl test NODE` in the shell for the same check. The default proxy group starts in automatic mode. `/use NODE` selects its current member, and `/use --auto` resumes priority-based selection. A rule or preset assigned to a specified node continues to use that node. If it becomes unavailable, connections assigned to it fail. Established healthy connections keep their current paths during a group switch. The group selection and automatic or manual preference persist across restarts.
+`/check` or `proxyctl check` validates the running system path. Before the system tunnel starts, the same command can probe the first configured node in an isolated process. The console opens a list of imported nodes after you complete `node` in `/check node`. Select a node and press Enter once its name is in the input to run an isolated check. Run `proxyctl check node NODE` or `proxyctl test NODE` in the shell for the same check. The default proxy group starts in automatic mode. `/use NODE` selects its current member, and `/use --auto` resumes priority-based selection. A rule or preset assigned to a specified node continues to use that node. If it becomes unavailable, connections assigned to it fail. Established healthy connections keep their current paths during a group switch. The group selection and automatic or manual preference persist across restarts.
 
 ## Start the system proxy
 

@@ -531,13 +531,19 @@ func execute(_ args: [String], _ paths: Paths) throws {
     }
 }
 
-func parseLine(_ line: String) throws -> [String] {
-    var tokens: [String] = []
+struct CommandToken {
+    let value: String
+    let end: String.Index
+}
+
+func commandTokens(_ line: String, allowingIncomplete: Bool = false) throws -> [CommandToken] {
+    var tokens: [CommandToken] = []
     var token = ""
     var quote: Character?
     var escape = false
     var started = false
-    for character in line {
+    for index in line.indices {
+        let character = line[index]
         if escape { token.append(character); escape = false; continue }
         if character == "\\" && quote != "'" { escape = true; started = true; continue }
         if let matching = quote {
@@ -546,15 +552,25 @@ func parseLine(_ line: String) throws -> [String] {
             quote = character
             started = true
         } else if character.isWhitespace {
-            if started { tokens.append(token); token = ""; started = false }
+            if started {
+                tokens.append(CommandToken(value: token, end: index))
+                token = ""
+                started = false
+            }
         } else {
             token.append(character)
             started = true
         }
     }
-    guard quote == nil && !escape else { throw UserError(localized("引号或反斜杠尚未闭合。", "Close the quote or finish the escape sequence.")) }
-    if started { tokens.append(token) }
+    guard allowingIncomplete || (quote == nil && !escape) else {
+        throw UserError(localized("引号或反斜杠尚未闭合。", "Close the quote or finish the escape sequence."))
+    }
+    if started { tokens.append(CommandToken(value: token, end: line.endIndex)) }
     return tokens
+}
+
+func parseLine(_ line: String) throws -> [String] {
+    try commandTokens(line).map(\.value)
 }
 
 func consoleCommand(_ input: String) -> String {
