@@ -55,7 +55,7 @@ func pendingPolicyMessage(_ status: ProtectionStatus, lookup: String = commandEx
 func applyRoutingPolicy(_ profile: ManagedProfile) throws {
     let update = try JSONEncoder().encode(RoutingUpdate(profile))
     guard update.count <= maxConfigBytes else { throw RuleCollection.invalid }
-    try ProtectedService.asAdministrator(["system", "_apply-routing"] + startPresentation,
+    try ProtectedService.asAdministrator(["system", "_apply-routing"] + systemPresentation,
                                          executable: systemLauncher(), input: update)
 }
 
@@ -156,23 +156,32 @@ private func systemLauncher() throws -> URL {
     return executable
 }
 
-private var startPresentation: [String] {
+private var systemPresentation: [String] {
     [interfaceLanguage.rawValue, consoleInvocation ? "console" : "shell"]
 }
 
-private func loadStartPresentation(_ arguments: [String]) throws {
+private func loadSystemPresentation(_ arguments: [String]) throws {
     guard arguments.count == 2, let language = InterfaceLanguage(rawValue: arguments[0]),
           ["console", "shell"].contains(arguments[1]) else {
-        throw UserError("Invalid system startup arguments.")
+        throw UserError("Invalid system command presentation arguments.")
     }
     interfaceLanguage = language
     consoleInvocation = arguments[1] == "console"
 }
 
+private func runInstalledSystemCommand(_ action: String, _ arguments: [String] = []) throws {
+    guard FileManager.default.isExecutableFile(atPath: ProtectedService.cli.path) else {
+        let start = commandExample("system start")
+        throw UserError(localized("请先运行 \(start)。", "Run \(start) first."))
+    }
+    try ProtectedService.asAdministrator(["system", "_manage-installed"] + systemPresentation + [action] + arguments,
+                                         executable: systemLauncher())
+}
+
 private func installSystem(_ submission: SystemSubmission, paths: Paths, activate: Bool) throws {
     let node = try checkDeployment(submission, paths: paths)
     fflush(stdout)
-    let command = activate ? ["system", "_deploy", node] + startPresentation : ["system", "_prepare", node]
+    let command = activate ? ["system", "_deploy", node] + systemPresentation : ["system", "_prepare", node]
     try ProtectedService.asAdministrator(command, executable: systemLauncher(),
                                          input: JSONEncoder().encode(submission))
 }
@@ -208,7 +217,7 @@ private func startSystem(_ paths: Paths) throws {
     func startInstalled() throws {
         if installed?.phase == .prepared { _ = try TunnelCheck.preflight() }
         let revision = installed?.sourceRevision.map { [$0] } ?? []
-        try ProtectedService.asAdministrator(["system", "_start-installed"] + startPresentation + revision,
+        try ProtectedService.asAdministrator(["system", "_start-installed"] + systemPresentation + revision,
                                              executable: systemLauncher())
     }
 
@@ -253,7 +262,7 @@ func system(_ args: [String], _ paths: Paths) throws {
     if ["_prepare", "_deploy"].contains(action) && geteuid() == 0 {
         let activate = action == "_deploy"
         guard rest.count == (activate ? 3 : 1) else { throw UserError("Invalid system deployment arguments.") }
-        if activate { try loadStartPresentation(Array(rest.dropFirst())) }
+        if activate { try loadSystemPresentation(Array(rest.dropFirst())) }
         let input = try FileHandle.standardInput.read(upToCount: maxConfigBytes * 2 + 1) ?? Data()
         guard input.count <= maxConfigBytes * 2 else { throw UserError("系统配置超过大小限制。") }
         let submission = try JSONDecoder().decode(SystemSubmission.self, from: input)
@@ -262,16 +271,22 @@ func system(_ args: [String], _ paths: Paths) throws {
     }
     if action == "_start-installed" && geteuid() == 0 {
         guard (2...3).contains(rest.count) else { throw UserError("Invalid installed startup arguments.") }
-        try loadStartPresentation(Array(rest.prefix(2)))
+        try loadSystemPresentation(Array(rest.prefix(2)))
         try ProtectedService().startExisting(expectedRevision: rest.count == 3 ? rest[2] : nil)
         return
     }
     if action == "_apply-routing" && geteuid() == 0 {
-        try loadStartPresentation(rest)
+        try loadSystemPresentation(rest)
         let input = try FileHandle.standardInput.read(upToCount: maxConfigBytes + 1) ?? Data()
         guard input.count <= maxConfigBytes else { throw RuleCollection.invalid }
         let update = try JSONDecoder().decode(RoutingUpdate.self, from: input)
         try ProtectedService().applyRouting(update)
+        return
+    }
+    if action == "_manage-installed" && geteuid() == 0 {
+        guard rest.count >= 3 else { throw UserError("Invalid installed management command arguments.") }
+        try loadSystemPresentation(Array(rest.prefix(2)))
+        try ProtectedService().manage(rest[2], Array(rest.dropFirst(3)))
         return
     }
     if ProtectedService.isInstalledDriver(), action != "status" && action != "nodes" {
@@ -334,19 +349,19 @@ func system(_ args: [String], _ paths: Paths) throws {
         }
     case "trial", "keep", "rollback", "check", "stop", "enable", "disable":
         guard rest.isEmpty else { throw UserError("此命令无需额外参数。") }
-        try ProtectedService.asAdministrator(["system", action])
+        try runInstalledSystemCommand(action)
     case "rules":
         if rest == ["add"], tty {
             let status = ProtectedService.installedStatus()
             if let change = try promptForRule(nodeNames: status?.nodeRuleTargets ?? [], hasUpstream: status?.hasUpstream == true) {
-                try ProtectedService.asAdministrator(["system", "rules"] + change)
+                try runInstalledSystemCommand("rules", change)
             }
         } else {
-            try ProtectedService.asAdministrator(["system", "rules"] + rest)
+            try runInstalledSystemCommand("rules", rest)
         }
     case "use":
         guard rest.count == 1 else { throw UserError("用法：proxyctl system use NODE | --auto") }
-        try ProtectedService.asAdministrator(["system", action, rest[0]])
+        try runInstalledSystemCommand(action, rest)
     default:
         throw UserError("未知的系统命令。运行 proxyctl system 查看用法。")
     }
@@ -361,7 +376,7 @@ func firewall(_ args: [String]) throws {
         try PacketFilter.validate()
         print(PacketFilter.rules)
     case ["on"]:
-        try ProtectedService.asAdministrator(["system", "protect"])
+        try runInstalledSystemCommand("protect")
     default:
         throw UserError("用法：proxyctl firewall status | plan | on")
     }

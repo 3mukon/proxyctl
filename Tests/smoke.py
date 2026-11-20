@@ -925,6 +925,7 @@ def verify(bundle, scratch, first, second, outside):
     cli("legacy", ok=False)
     cli("setup", "--legacy", ok=False)
     cli("nodes", "--legacy", ok=False)
+    cli("system", "_manage-installed", "en", "shell", "check", ok=False)
     cli("setup", str(source), "--port", str(port), "--control-port", str(control), "--default", "proxy",
         "--node", first.name, "--node", second.name.lower())
     config = state / "profile.json"
@@ -1424,7 +1425,7 @@ def verify_routing_update(bundle, scratch, product, primary, backup):
     subprocess.run([
         "/usr/bin/xcrun", "swiftc", "-module-cache-path", str(bundle.parent / "module-cache"),
         *(str(path) for path in sorted(profiles.glob("*.swift"))),
-        *(str(host / path) for path in ("Command.swift", "Host.swift", "RoutingRollback.swift")),
+        *(str(host / path) for path in ("Command.swift", "Host.swift", "OperationLock.swift", "RoutingRollback.swift")),
         str(product / "Tests/RoutingUpdate.swift"), "-o", str(helper),
     ], check=True, timeout=60)
     port, controller = unused_ports()
@@ -1464,6 +1465,7 @@ if __name__ == "__main__":
         subprocess.run([
             "/usr/bin/xcrun", "swiftc", "-module-cache-path", str(bundle.parent / "module-cache"),
             str(product / "Sources/Host/ProtectionState.swift"),
+            str(product / "Sources/Host/OperationLock.swift"),
             str(product / "Sources/Host/PacketFilterRoot.swift"),
             str(product / "Sources/Host/TunnelHTTPSProbe.swift"),
             str(product / "Tests/ProtectionLifecycle.swift"), "-o", str(lifecycle),

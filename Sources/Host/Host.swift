@@ -7,6 +7,12 @@ struct UserError: LocalizedError {
     init(_ message: String) { errorDescription = message }
 }
 
+extension OperationLockBusy: LocalizedError {
+    var errorDescription: String? {
+        localized("另一条管理命令正在运行。", "Another management command is running.")
+    }
+}
+
 var consoleInvocation = ProcessInfo.processInfo.environment["PROXYCTL_CONSOLE"] == "1"
 
 func commandExample(_ arguments: String) -> String {
@@ -77,12 +83,12 @@ struct Paths {
         }
     }
 
-    func locked<T>(_ work: () throws -> T) throws -> T {
+    func locked<T>(waitingUpTo timeout: TimeInterval = 0, _ work: () throws -> T) throws -> T {
         try ensureState()
         let descriptor = open(state.appendingPathComponent("operation.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw UserError(localized("无法锁定配置目录。", "Could not lock the profile directory.")) }
         defer { close(descriptor) }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw UserError(localized("另一条管理命令正在运行。", "Another management command is running.")) }
+        try acquireOperationLock(descriptor, waitingUpTo: timeout)
         return try work()
     }
 

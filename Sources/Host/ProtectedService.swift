@@ -30,6 +30,7 @@ struct ProtectedService {
     static let guardJob = URL(fileURLWithPath: "/Library/LaunchDaemons/\(guardLabel).plist")
     static let publicStatus = base.appendingPathComponent("status.json")
     static let interval: TimeInterval = 240
+    private static let commandLockWait: TimeInterval = 15
     private static let dnsKey = "State:/Network/Service/local.proxyctl.tunnel/DNS" as CFString
 
     private let privateState = base.appendingPathComponent("private", isDirectory: true)
@@ -49,7 +50,7 @@ struct ProtectedService {
         try? JSONDecoder().decode(ProtectionStatus.self, from: localData(publicStatus))
     }
 
-    static func asAdministrator(_ arguments: [String], executable: URL = cli, input: Data? = nil) throws {
+    static func asAdministrator(_ arguments: [String], executable: URL, input: Data? = nil) throws {
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             let start = commandExample("system start")
             throw UserError(localized("请先运行 \(start)。", "Run \(start) first."))
@@ -126,7 +127,7 @@ struct ProtectedService {
 
     func install(from bundle: Paths, submission: SystemSubmission, selected: String, activate: Bool = false) throws {
         try secureState()
-        try paths.locked {
+        try paths.locked(waitingUpTo: Self.commandLockWait) {
             let previousState = FileManager.default.fileExists(atPath: recordFile.path) ? try record() : nil
             if let previousState, previousState.phase != .prepared {
                 throw UserError("请先回退正在运行的系统部署，再准备新配置。")
@@ -286,7 +287,7 @@ struct ProtectedService {
     func applyRouting(_ update: RoutingUpdate) throws {
         try secureState()
         let paths = try paths
-        try paths.locked {
+        try paths.locked(waitingUpTo: Self.commandLockWait) {
             let state = try record()
             guard state.phase == .protected, state.isVerified, filter.active(), jobLoaded(Self.guardLabel),
                   TunnelCheck.routed, try !TunnelCheck.competingVPNActive() else {
@@ -458,7 +459,7 @@ struct ProtectedService {
 
     func startExisting(expectedRevision: String? = nil) throws {
         try secureState()
-        try paths.locked {
+        try paths.locked(waitingUpTo: Self.commandLockWait) {
             if let expectedRevision, try record().sourceRevision != expectedRevision {
                 throw UserError(localized("系统配置已变化，请重新启动。", "The system profile changed. Run start again."))
             }
@@ -671,12 +672,27 @@ struct ProtectedService {
         guard Self.isInstalledDriver(), FileManager.default.fileExists(atPath: recordFile.path) else {
             throw UserError("请先准备系统配置。")
         }
-        if action == "_engine" {
+        if action == "_engine", args.isEmpty {
             try launchCore()
             return
         }
+        if action == "_watch", args.isEmpty {
+            try secureState()
+            do { try paths.locked { try watch() } }
+            catch is OperationLockBusy { return }
+            return
+        }
+        try manage(action, args)
+    }
+
+    func manage(_ action: String, _ args: [String]) throws {
+        guard FileManager.default.isExecutableFile(atPath: Self.cli.path),
+              FileManager.default.fileExists(atPath: recordFile.path) else {
+            let start = commandExample("system start")
+            throw UserError(localized("请先运行 \(start)。", "Run \(start) first."))
+        }
         try secureState()
-        try paths.locked {
+        try paths.locked(waitingUpTo: Self.commandLockWait) {
             switch (action, args.count) {
             case ("trial", 0): try trial()
             case ("protect", 0): try activateFirewall()
@@ -698,7 +714,6 @@ struct ProtectedService {
             case ("check", 0): try check()
             case ("use", 1): try use(args[0])
             case ("rules", _): try rules(args)
-            case ("_watch", 0): try watch()
             default: throw UserError("未知的系统服务操作。")
             }
         }

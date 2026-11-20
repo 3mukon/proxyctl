@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 @main
@@ -83,10 +84,53 @@ struct ProtectionLifecycleTests {
         }
     }
 
+    private static func verifyOperationLock() throws {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let holder = open(temporary.path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0o600)
+        precondition(holder >= 0)
+        defer {
+            close(holder)
+            try? FileManager.default.removeItem(at: temporary)
+        }
+        let waiter = open(temporary.path, O_RDWR | O_CLOEXEC)
+        precondition(waiter >= 0)
+        defer { close(waiter) }
+        try acquireOperationLock(holder, waitingUpTo: 0)
+
+        for timeout in [0.0, 0.12] {
+            let start = ProcessInfo.processInfo.systemUptime
+            do {
+                try acquireOperationLock(waiter, waitingUpTo: timeout)
+                preconditionFailure("A held lock must time out")
+            } catch is OperationLockBusy {
+                precondition(ProcessInfo.processInfo.systemUptime - start >= timeout)
+            }
+        }
+
+        let released = DispatchSemaphore(value: 0)
+        let start = ProcessInfo.processInfo.systemUptime
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(150)) {
+            precondition(flock(holder, LOCK_UN) == 0)
+            released.signal()
+        }
+        try acquireOperationLock(waiter, waitingUpTo: 2)
+        precondition(released.wait(timeout: .now() + .seconds(1)) == .success)
+        precondition(ProcessInfo.processInfo.systemUptime - start >= 0.12)
+        precondition(flock(holder, LOCK_EX | LOCK_NB) == -1 && errno == EWOULDBLOCK)
+
+        do {
+            try acquireOperationLock(-1, waitingUpTo: 0)
+            preconditionFailure("An invalid descriptor must report a system error")
+        } catch let error as POSIXError {
+            precondition(error.code == .EBADF)
+        }
+    }
+
     static func main() throws {
         try verifyStartup()
         try verifyPacketFilterRoot()
         verifyHTTPSProbe()
+        try verifyOperationLock()
         let unverified = ProtectionRecord(phase: .prepared, bootID: "prior")
         precondition(unverified.resumedAtBoot("new", enabled: true) == nil)
 
