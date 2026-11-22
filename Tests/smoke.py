@@ -11,6 +11,7 @@ import pathlib
 import pty
 import re
 import select
+import shlex
 import socket
 import socketserver
 import stat
@@ -339,7 +340,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"\x1b[B", "› /nodes")
         offset = len(result)
         type_keys(b"\r", b"H/nodes ")
-        expect("从剪贴板添加分享链接", after=offset)
+        expect("通过分享链接添加节点", after=offset)
         expect("Enter 执行", after=offset)
         assert "节点 · 本机配置".encode() not in result[offset:]
         type_keys(b"\r", "节点 · 本机配置", wait_for_input=True)
@@ -375,13 +376,18 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert re.search(rb"\x1b\[4;\d+H\x1b\[38;2;151;146;141m " +
                          "第 1/".encode() + rb"\d+" + " 页  ".encode() + version_label, help_frame)
         type_keys(b"\x1b", "代理概览")
-        type_keys(b"/nodes ", "从剪贴板添加分享链接")
+        type_keys(b"/nodes ", "通过分享链接添加节点")
         type_keys(b"\x1b[B", "› add")
         type_keys(b"\r", b"H/nodes add ")
         type_keys(b"\x1b", "Enter 执行  Esc 清空", wait_for_input=True)
         assert b"H/nodes " in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\x1b", "输入 / 查看命令", wait_for_input=True)
-        type_keys(b"/nodes add with-an-argument\r", "复制分享链接，再运行 /nodes add。")
+        type_keys(b"/nodes add with-an-argument\r", "运行 /nodes add 打开添加页，再粘贴分享链接。")
+        type_keys(b"/node add\r", b"H/nodes add", wait_for_input=True)
+        assert "› add".encode() in result.rsplit(b"\x1b[2J", 1)[-1]
+        type_keys(b"\r", b"H/nodes add ", wait_for_input=True)
+        type_keys(b"\r", "粘贴分享链接，每行一条。", wait_for_input=True)
+        type_keys(b"\x1b", "输入 / 查看命令", wait_for_input=True)
         type_keys(b"/use --auto\r", "输入 / 查看日常命令。", wait_for_input=True)
         nodes_query = command + ["nodes", "--json"]
         original_group = json.loads(subprocess.check_output(nodes_query, timeout=8))
@@ -441,6 +447,8 @@ def tty_smoke(command, port, fetch, health, source, preview):
         groups = json.loads(subprocess.check_output(command + ["presets", "--json"], timeout=8))
         assert next(group for group in groups if group["name"] == "openai")["enabled"]
         type_keys(b"\r", "预设 OpenAI · 已停用", wait_for_input=True)
+        type_keys(b"/presets enable open\r\r", "预设 OpenAI · 已启用", wait_for_input=True)
+        type_keys(b"/presets disable open\r\r", "预设 OpenAI · 已停用", wait_for_input=True)
         type_keys(b"/presets \r", "OpenAI   已停用")
         type_keys(b"/rou", b"H/rou", wait_for_input=True)
         assert " 命令 ".encode() not in result.rsplit(b"\x1b[2J", 1)[-1]
@@ -714,8 +722,8 @@ def tty_smoke(command, port, fetch, health, source, preview):
 
         completion_cases = {
             b"/status": b"Enter Run",
-            b"/nodes": b"Add share links from clipboard",
-            b"/nodes add": b"Enter Run",
+            b"/nodes": b"Add nodes from share links",
+            b"/nodes add": b"Enter Open form",
             b"/nodes import": b"Type a file path",
             b"/groups": b"Create a group or change its members and order",
             b"/groups edit": b"New proxy group",
@@ -768,6 +776,48 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert_shortcuts(system_status, *(b"/system " + action for action in system_actions))
         type_keys(b"/system apply\r\r", "This requires a running system proxy", wait_for_input=True)
         type_keys(b"/system invalid-action\r", "Use /system to see the available actions.", wait_for_input=True)
+
+        # Record child dispatch from the running console with a stub in its disposable install.
+        executable = pathlib.Path(command[0]).resolve()
+        with tempfile.TemporaryDirectory(prefix="system-dispatch-", dir=executable.parent) as directory:
+            original_executable = pathlib.Path(directory) / "binary"
+            shim = pathlib.Path(directory) / "record"
+            trace = pathlib.Path(directory) / "calls"
+            trace.touch()
+            os.link(executable, original_executable)
+            shim.write_text(
+                '#!/bin/sh\n'
+                'test "$#" = 4 && test "$1" = --state-dir && test "$3" = system || exit 64\n'
+                f'printf "%s\\n" "$4" >> {shlex.quote(str(trace))}\n'
+                'printf "Test dispatch /system %s\\n" "$4"\n'
+                'test "$4" != _check-start\n'
+            )
+            shim.chmod(0o700)
+            try:
+                os.replace(shim, executable)
+                for action in system_actions:
+                    path = b"/system " + action
+                    before = trace.read_bytes()
+                    type_keys(path + b"\r", b"H" + path + b" ", wait_for_input=True)
+                    assert trace.read_bytes() == before
+                    type_keys(b"\r", b"Test dispatch /system ", wait_for_input=True)
+                    accepted = (action, b"_check-start") if action == b"start" else (action,)
+                    dispatched = trace.read_bytes()[len(before):].splitlines()
+                    assert len(dispatched) == 1 and dispatched[0] in accepted, dispatched
+            finally:
+                os.replace(original_executable, executable)
+
+        profile_path = pathlib.Path(command[-1]) / "profile.json"
+        with tempfile.TemporaryDirectory(prefix="missing-profile-", dir=profile_path.parent) as directory:
+            original_profile = pathlib.Path(directory) / "profile.json"
+            profile_path.rename(original_profile)
+            try:
+                type_keys(b"/status \r", "No nodes configured", wait_for_input=True)
+                type_keys(b"/rules default\r\r", "Add a share link with /nodes add", wait_for_input=True)
+            finally:
+                original_profile.rename(profile_path)
+        type_keys(b"/status \r", "Local profile ready", wait_for_input=True)
+
         type_keys(b"/rules ", "Choose where unmatched traffic goes", wait_for_input=True)
         rule_menu = result.rsplit(b"\x1b[2J", 1)[-1]
         assert b"Add a routing rule" in rule_menu and b"Remove a routing rule" in rule_menu
@@ -791,7 +841,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"/rules default direct\r\r", "Everything else  →  Direct", wait_for_input=True)
         complete_form(b"/rules upstream off\r", "External upstream settings saved.")
         type_keys(b"\x1b", "Type / for commands")
-        type_keys(b"/nodes ", "Add share links from clipboard")
+        type_keys(b"/nodes ", "Add nodes from share links")
         type_keys(b"\x1b", "Enter Run  Esc Clear", wait_for_input=True)
         type_keys(b"\x1b", "Type / for commands", wait_for_input=True)
         type_keys(b"/check node ", b"H/check node ", wait_for_input=True)
@@ -876,6 +926,24 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"\r", "已校验配置 · 美国 IPv6 → 美国", wait_for_input=True)
         inventory = json.loads(subprocess.check_output(command + ["nodes", "--json"], timeout=8))
         assert inventory["order"] == ["美国 IPv6", "美国"]
+        type_keys(b"/nodes add\r", b"H/nodes add ", wait_for_input=True)
+        assert "Enter 打开添加页".encode() in result.rsplit(b"\x1b[2J", 1)[-1]
+        type_keys(b"\r", "粘贴分享链接，每行一条。", wait_for_input=True)
+        type_keys(b"\x1b[200~broken://fixture-value\x1b[201~", "•••", wait_for_input=True)
+        type_keys(b"\r", "第 1 条链接", wait_for_input=True)
+        assert json.loads(subprocess.check_output(command + ["nodes", "--json"], timeout=8)) == inventory
+        type_keys(b"\x1b", "粘贴分享链接，每行一条。", wait_for_input=True)
+        type_keys(b"\x1b[200~" + b"x" * 4200 + b"\x1b[201~", "链接超出输入长度", wait_for_input=True)
+        links = (b"socks5://fixture:private-example-a@127.0.0.1:9#First%20paste\r\n"
+                 b"socks5://fixture:private-example-b@127.0.0.1:19#Second%20paste")
+        paste_start = len(result)
+        type_keys(b"\x1b[200~" + links + b"\x1b[201~", "•••", wait_for_input=True)
+        type_keys(b"\r", "已添加 2 个节点。", wait_for_input=True)
+        added = json.loads(subprocess.check_output(command + ["nodes", "--json"], timeout=8))
+        assert added["order"] == inventory["order"] + ["First paste", "Second paste"]
+        type_keys(b"\x1b[A", b"H/nodes add", wait_for_input=True)
+        assert b"private-example-" not in result[paste_start:] and b"--stdin" not in result[paste_start:]
+        type_keys(b"\x03", "输入 / 查看命令", wait_for_input=True)
         offset = len(result)
         resize(20, 7)
         expect(b"\x1b[6;", after=offset)

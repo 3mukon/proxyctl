@@ -6,15 +6,23 @@ private func readNodeLinks(_ args: [String]) throws -> [ShareLink] {
     case ["--stdin"]:
         data = try FileHandle.standardInput.read(upToCount: maxConfigBytes + 1) ?? Data()
     case []:
-        let clipboard = try run("/usr/bin/pbpaste", ["-Prefer", "txt"], quiet: true)
-        guard clipboard.status == 0 else {
-            throw UserError(localized("无法读取剪贴板。", "Could not read the clipboard."))
-        }
-        data = clipboard.output
+        data = try nodeLinkClipboard()
     default:
         let example = commandExample("nodes add")
         throw UserError(localized("复制链接后运行 \(example)。脚本可用 --stdin。", "Copy the link and run \(example). Scripts can use --stdin."))
     }
+    return try parseNodeLinks(data)
+}
+
+func nodeLinkClipboard() throws -> Data {
+    let clipboard = try run("/usr/bin/pbpaste", ["-Prefer", "txt"], quiet: true)
+    guard clipboard.status == 0 else {
+        throw UserError(localized("无法读取剪贴板。", "Could not read the clipboard."))
+    }
+    return clipboard.output
+}
+
+func parseNodeLinks(_ data: Data) throws -> [ShareLink] {
     guard data.count <= maxConfigBytes, let source = String(data: data, encoding: .utf8) else {
         throw UserError(localized("链接文本过大或编码无效。", "The link text is too large or its encoding is invalid."))
     }

@@ -34,6 +34,7 @@ private struct ConsoleForm {
     var choices: [FormChoice] = []
     var accept: ((TerminalConsole, String) throws -> Void)? = nil
     var returnCommand: [String]? = nil
+    var masksInput = false
 }
 
 private let presetEditCommand = ["presets", "edit"]
@@ -73,8 +74,8 @@ private func commandOptions(for command: String) -> [CommandChoice] {
     switch command {
     case "nodes":
         return [
-            .init("add", localized("从剪贴板添加分享链接", "Add share links from clipboard"), ["nodes", "add"],
-                  help: localized("从剪贴板导入节点分享链接。", "Import share links from the clipboard.")),
+            .init("add", localized("通过分享链接添加节点", "Add nodes from share links"), ["nodes", "add"],
+                  help: localized("在添加页粘贴分享链接，或留空以使用剪贴板。", "Paste share links in the form, or leave it blank to use the clipboard.")),
             .init("import", localized("从 sing-box JSON 导入节点", "Import nodes from a sing-box JSON file"), ["nodes", "import"],
                   help: localized("导入节点，选择默认组顺位或使用文件里的代理组。",
                                   "Import nodes and set default priority or use a group from the source file."))
@@ -450,12 +451,12 @@ private final class ConsoleProcess {
     private let cap = 192 * 1024
     private(set) var truncated = false
 
-    init(_ executable: URL, _ arguments: [String], onSuccess: ((TerminalConsole) -> Void)? = nil) throws {
+    init(_ executable: URL, _ arguments: [String], input: Data? = nil, onSuccess: ((TerminalConsole) -> Void)? = nil) throws {
         self.onSuccess = onSuccess
         process.executableURL = executable
         process.arguments = arguments
         process.environment = childEnvironment
-        process.standardInput = FileHandle.nullDevice
+        process.standardInput = try input.map(commandInputFile) ?? FileHandle.nullDevice
         process.standardOutput = output
         process.standardError = output
         let descriptor = output.fileHandleForReading.fileDescriptor
@@ -495,13 +496,14 @@ private struct Draft {
         cursor = text.count
     }
 
-    mutating func insert(_ value: String) {
-        let value = terminalText(value)
-        guard text.utf8.count + value.utf8.count <= 4096 else { return }
+    @discardableResult
+    mutating func insert(_ value: String) -> Bool {
+        guard text.utf8.count + value.utf8.count <= consoleInputLimit else { return false }
         let position = text.index(text.startIndex, offsetBy: cursor)
         let before = String(text[..<position]) + value
         text = before + text[position...]
         cursor = before.count
+        return true
     }
 
     mutating func delete(backward: Bool) {
@@ -584,6 +586,11 @@ private final class TerminalConsole {
     private var displayedSelectedNode: String? {
         if let system = activeSystem { return system.selectedNode }
         return status.selectedNode
+    }
+
+    private var displayedDraft: Draft {
+        guard form?.masksInput == true else { return draft }
+        return Draft(text: String(repeating: "•", count: draft.text.count), cursor: draft.cursor)
     }
 
     private var ruleUpstreamAvailable: Bool {
@@ -697,11 +704,12 @@ private final class TerminalConsole {
         }
         switch action {
         case "default":
-            let current = activeSystem == nil ? profile?.routing.fallback : activeSystem?.fallback
-            let targets = outboundOptions(nodeNames: profile?.nodes.map(\.name) ?? [],
-                                          groupNames: profile?.routing.groupNames ?? [], hasUpstream: true)
+            guard let profile else { return [] }
+            let current = activeSystem == nil ? profile.routing.fallback : activeSystem?.fallback
+            let targets = outboundOptions(nodeNames: profile.nodes.map(\.name),
+                                          groupNames: profile.routing.groupNames, hasUpstream: true)
             return outboundChoices(targets, matching: tail, command: ["rules", action], current: current,
-                                   needsUpstreamAddress: profile?.upstream == nil)
+                                   needsUpstreamAddress: profile.upstream == nil)
         case "add":
             guard let (value, query) = nextArgument(tail), let match = try? ruleValue(value) else { return [] }
             let available = activeSystem.map { $0.nodeRuleTargets ?? [] } ?? profile?.nodes.map(\.name) ?? []
@@ -821,7 +829,8 @@ private final class TerminalConsole {
             return
         }
         switch key {
-        case let .text(value): draft.insert(value); edited()
+        case let .text(value): draft.insert(terminalText(value)); edited()
+        case let .paste(value, truncated): insertPaste(value, truncated: truncated)
         case .backspace: draft.delete(backward: true); edited()
         case .delete: draft.delete(backward: false); edited()
         case .left:
@@ -861,6 +870,22 @@ private final class TerminalConsole {
             else { draft.delete(backward: false); edited() }
         case .clear: showHome()
         }
+    }
+
+    private func insertPaste(_ value: String, truncated: Bool) {
+        if form?.masksInput == true {
+            let lines = value.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            let text = lines.map { terminalText(String($0)) }.joined(separator: "\n")
+            guard !truncated, draft.insert(text) else {
+                formError = localized("链接超出输入长度。清空输入后，按 Enter 从剪贴板添加。",
+                                      "The links exceed the input length. Clear the input and press Enter to import from the clipboard.")
+                return
+            }
+        } else {
+            let text = value.replacingOccurrences(of: "[\\r\\n\\t]+", with: " ", options: .regularExpression)
+            draft.insert(terminalText(text))
+        }
+        edited()
     }
 
     private func escapeStep(hasChoices: Bool) -> EscapeStep {
@@ -937,6 +962,16 @@ private final class TerminalConsole {
     }
 
     private func complete(_ choice: CommandChoice) {
+        if choice.arguments.count == 1, argumentContext == nil,
+           let token = (try? commandTokens(draft.text, allowingIncomplete: true))?.first {
+            let tail = draft.text[token.end...]
+            if tail.contains(where: { !$0.isWhitespace }) {
+                draft.replace("/" + choice.arguments[0] + tail)
+                edited()
+                completedArgumentCount = 1
+                return
+            }
+        }
         setCommandDraft(choice.arguments)
         completedArgumentCount = choice.arguments.count
         selection = choice.needsArgument ? 0 : nil
@@ -1025,15 +1060,12 @@ private final class TerminalConsole {
             return
         default: break
         }
-        if arguments == ["rules", "default"] {
-            setCommandDraft(arguments)
-            return
-        }
         if arguments.starts(with: ["nodes", "add"]), arguments.count > 2 {
             draft.replace("")
             edited()
             showResult(localized("添加节点", "Add nodes"), lines: [
-                ConsoleLine(localized("复制分享链接，再运行 /nodes add。", "Copy the share links, then run /nodes add."), .warning)
+                ConsoleLine(localized("运行 /nodes add 打开添加页，再粘贴分享链接。",
+                                      "Open the form with /nodes add, then paste the share links."), .warning)
             ])
             return
         }
@@ -1049,7 +1081,7 @@ private final class TerminalConsole {
         dispatch(arguments)
     }
 
-    private func dispatch(_ arguments: [String], label displayLabel: String? = nil) {
+    private func dispatch(_ arguments: [String], label displayLabel: String? = nil, input: Data? = nil) {
         form = nil
         formHistory.removeAll()
         let label = displayLabel ?? "/" + arguments.map(quoted).joined(separator: " ")
@@ -1107,7 +1139,7 @@ private final class TerminalConsole {
             } else {
                 runningLabel = label
                 cancelling = false
-                child = try ConsoleProcess(executable, invocation)
+                child = try ConsoleProcess(executable, invocation, input: input)
             }
         } catch {
             append([ConsoleLine(terminalText(error.localizedDescription), .warning)])
@@ -1550,6 +1582,8 @@ private final class TerminalConsole {
             return localized("Enter 显示选项", "Enter for options")
         }
         switch draft.text.trimmingCharacters(in: .whitespaces) {
+        case "/nodes add":
+            return localized("Enter 打开添加页", "Enter Open form")
         case "/nodes group", "/setup upstream", "/rules upstream":
             return localized("Enter 打开编辑页", "Enter Open editor")
         case "/setup", "/setup import", "/nodes import":
@@ -1614,8 +1648,8 @@ private final class TerminalConsole {
                 let label = form == nil && argumentContext == nil ? "/" + choice.title : choice.title
                 canvas.draw((selected ? "› " : "  ") + label, at: 2, ink: selected ? .title : .muted)
             } else {
-                let line = form?.prompt ?? resultTable?.rows.first?.first ?? result.first?.text ?? resultTitle ?? overviewTitle
-                canvas.draw(line, at: 2, ink: .title)
+                let line = formError ?? form?.prompt ?? resultTable?.rows.first?.first ?? result.first?.text ?? resultTitle ?? overviewTitle
+                canvas.draw(line, at: 2, ink: formError == nil ? .title : .warning)
             }
         }
         if prompt > 1 { canvas.versionBadge(at: 1) }
@@ -1627,8 +1661,9 @@ private final class TerminalConsole {
         }
         let width = max(1, canvas.width - 2)
         let message = child.map { _ in localized("运行中…", "Running…") }
-        let layout = inputLayout(width: width, content: cellCount(message ?? draft.text) + 1, showMenu: !choices.isEmpty)
-        let (visible, cursor) = draft.viewport(layout.input)
+        let display = displayedDraft
+        let layout = inputLayout(width: width, content: cellCount(message ?? display.text) + 1, showMenu: !choices.isEmpty)
+        let (visible, cursor) = display.viewport(layout.input)
         canvas.draw(message ?? visible, at: prompt, column: column, limit: layout.input)
         canvas.draw(layout.hint, at: prompt, column: column + layout.hintOffset, ink: .muted)
         if child == nil { canvas.cursor(at: prompt, column: column + cursor) }
@@ -1752,9 +1787,10 @@ private final class TerminalConsole {
         } else {
             placeholder = localized("输入 / 查看命令", "Type / for commands")
         }
-        let content = message.map(cellCount) ?? (draft.text.isEmpty ? cellCount(placeholder) + 2 : cellCount(draft.text) + 1)
+        let display = displayedDraft
+        let content = message.map(cellCount) ?? (display.text.isEmpty ? cellCount(placeholder) + 2 : cellCount(display.text) + 1)
         let layout = inputLayout(width: width, content: content, showMenu: showMenu)
-        let (visible, cursor) = draft.viewport(layout.input)
+        let (visible, cursor) = display.viewport(layout.input)
         if let message {
             canvas.draw(message, at: row, column: column, limit: layout.input, ink: .muted)
         } else if draft.text.isEmpty {
@@ -1840,6 +1876,8 @@ private extension TerminalConsole {
 
     func beginForm(_ arguments: [String]) throws -> Bool {
         switch arguments {
+        case ["nodes", "add"]:
+            addNodeForm()
         case ["nodes", "group"]:
             guard FileManager.default.fileExists(atPath: paths.config.path) else { throw addNodesFirst }
             let local = try ManagedProfile(paths.config)
@@ -1857,6 +1895,9 @@ private extension TerminalConsole {
             let group = try routingPreset(arguments[2], profile: profile)
             setCommandDraft(["presets", "route", group.name])
         case ["rules", "add"]: try addRuleForm()
+        case ["rules", "default"]:
+            guard profile != nil else { throw addNodesFirst }
+            setCommandDraft(arguments)
         case _ where arguments.count == 3 && arguments.starts(with: ["rules", "add"]):
             guard profile != nil || activeSystem != nil else { throw addNodesFirst }
             setCommandDraft(["rules", "add", try ruleValue(arguments[2])])
@@ -2105,6 +2146,18 @@ private extension TerminalConsole {
     func ruleValue(_ value: String) throws -> String {
         let match = value.trimmingCharacters(in: .whitespaces)
         return try RuleMatch(match).normalize(match)
+    }
+
+    func addNodeForm() {
+        let title = localized("添加节点", "Add nodes")
+        let prompt = localized("粘贴分享链接，每行一条。留空按 Enter 从剪贴板添加。",
+                               "Paste one share link per line. Press Enter on a blank input to use the clipboard.")
+        present(ConsoleForm(title: title, prompt: prompt, accept: { console, value in
+            let input = value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? try nodeLinkClipboard() : Data(value.utf8)
+            _ = try parseNodeLinks(input)
+            console.dispatch(["nodes", "add", "--stdin"], label: "/nodes add", input: input)
+        }, masksInput: true))
     }
 
     func addRuleForm() throws {

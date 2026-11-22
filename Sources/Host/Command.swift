@@ -36,6 +36,18 @@ func checkedStatus(_ result: RunResult) throws {
 
 struct ExitCode: Error { let value: Int32 }
 
+func commandInputFile(_ input: Data) throws -> FileHandle {
+    var name = FileManager.default.temporaryDirectory.appendingPathComponent("proxyctl-submit.XXXXXX").path.utf8CString
+    let fd = name.withUnsafeMutableBufferPointer { mkstemp($0.baseAddress!) }
+    guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    let removed = name.withUnsafeBufferPointer { unlink($0.baseAddress!) }
+    guard removed == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    try file.write(contentsOf: input)
+    try file.seek(toOffset: 0)
+    return file
+}
+
 private func foregroundOutput(_ output: FileHandle, onTick: () -> Void) -> Data {
     var data = Data()
     var descriptor = pollfd(fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
@@ -78,14 +90,8 @@ func runForeground(_ executable: String, _ arguments: [String], input: Data? = n
     var submission: FileHandle?
     if let input {
         // An unlinked file supplies configuration bytes independently of the password prompt.
-        var name = FileManager.default.temporaryDirectory.appendingPathComponent("proxyctl-submit.XXXXXX").path.utf8CString
-        let fd = name.withUnsafeMutableBufferPointer { mkstemp($0.baseAddress!) }
-        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        let removed = name.withUnsafeBufferPointer { unlink($0.baseAddress!) }
-        if removed != 0 { try check(errno) }
-        try file.write(contentsOf: input)
-        try file.seek(toOffset: 0)
+        let file = try commandInputFile(input)
+        let fd = file.fileDescriptor
         try check(posix_spawn_file_actions_adddup2(&actions, fd, STDIN_FILENO))
         if fd != STDIN_FILENO { try check(posix_spawn_file_actions_addclose(&actions, fd)) }
         submission = file

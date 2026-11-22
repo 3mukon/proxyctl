@@ -13,6 +13,7 @@ private func interruptedTerminalSignal() -> Int32
 private func terminalScalarWidth(_ scalar: UInt32) -> Int32
 
 let csi = "\u{1b}["
+let consoleInputLimit = 4096
 
 struct TerminalSize: Equatable {
     let columns: Int
@@ -20,7 +21,7 @@ struct TerminalSize: Equatable {
 }
 
 enum ConsoleKey {
-    case text(String), up, down, left, right, home, end
+    case text(String), paste(String, truncated: Bool), up, down, left, right, home, end
     case enter, escape, tab, backspace, delete, interrupt, eof, clear
 }
 
@@ -184,11 +185,12 @@ final class Terminal {
         while let byte = pop(30) {
             buffer.append(byte)
             if buffer.suffix(end.count).elementsEqual(end) {
-                let text = String(decoding: buffer.dropLast(end.count).prefix(4096), as: UTF8.self)
+                let content = buffer.dropLast(end.count)
+                let text = String(decoding: content.prefix(consoleInputLimit), as: UTF8.self)
                 pasted = nil
-                return .text(terminalText(text.replacingOccurrences(of: "[\\r\\n\\t]+", with: " ", options: .regularExpression)))
+                return .paste(text, truncated: content.count > consoleInputLimit)
             }
-            if buffer.count > 4096 + end.count { buffer.remove(at: 4096) }
+            if buffer.count > consoleInputLimit + 1 + end.count { buffer.remove(at: consoleInputLimit + 1) }
         }
         pasted = buffer
         return nil
