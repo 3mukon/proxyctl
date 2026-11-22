@@ -94,7 +94,6 @@ struct Status: Encodable {
     let service: String
     let port: Int?
     let selectedNode: String?
-    let automaticSelection: Bool?
     let systemServiceInstalled: Bool
     let protectedSystem: ProtectionStatus?
 }
@@ -114,7 +113,7 @@ func currentStatus(_ paths: Paths) -> Status {
     }
     let system = paths.state == (try? Paths())?.state ? ProtectedService.installedStatus() : nil
     return Status(service: service, port: engine?.profile.port, selectedNode: selected,
-                  automaticSelection: engine?.selectionPreference().automatic, systemServiceInstalled: installed, protectedSystem: system)
+                  systemServiceInstalled: installed, protectedSystem: system)
 }
 
 func localServiceText(_ service: String) -> String {
@@ -137,7 +136,6 @@ func statusLines(_ status: Status) -> [String] {
         lines.append(localized("回环监听     127.0.0.1:\(port)", "Loopback     127.0.0.1:\(port)"))
     }
     if let selected = status.selectedNode { lines.append(localized("当前节点     \(terminalText(selected))", "Node         \(terminalText(selected))")) }
-    if let automatic = status.automaticSelection { lines.append(selectionModeLine(automatic)) }
     return lines
 }
 
@@ -360,7 +358,7 @@ func nodes(_ args: [String], _ paths: Paths) throws {
     }
 }
 
-func useOrTest(_ command: String, _ arguments: [String], _ paths: Paths) throws {
+func testNodes(_ arguments: [String], _ paths: Paths) throws {
     var args = arguments[...]
     var name: String?
     var url = probeURL
@@ -374,47 +372,19 @@ func useOrTest(_ command: String, _ arguments: [String], _ paths: Paths) throws 
         name = value
     }
     let engine = try Engine(paths)
-    let names = name == nil || (command == "use" && name == "--auto") ? engine.profile.order : [name!]
-    if command == "use" && name == nil {
-        let node = commandExample("use NODE")
-        let automatic = commandExample("use --auto")
-        throw UserError(localized("使用 \(node) 或 \(automatic)", "Use \(node) or \(automatic)"))
-    }
-    if command == "use" && !names.allSatisfy(engine.profile.order.contains) {
-        throw UserError(localized("此节点未加入当前策略。运行 \(commandExample("nodes")) 查看节点。",
-                                  "This node is outside the active policy. See \(commandExample("nodes"))."))
-    }
-    if command == "use" {
-        guard (try? engine.requireListener()) != nil else {
-            let editor = commandExample("groups edit")
-            throw UserError(localized("切换当前节点需要运行中的 Proxyctl 内核。用 \(editor) 编辑组成员和顺位。",
-                                      "Switching nodes requires the Proxyctl engine to be running. Use \(editor) to edit group membership and priority."))
+    let names = name.map { [$0] } ?? engine.profile.order
+    var success = false
+    for node in names {
+        guard let delay = try? engine.test(node, url: url) else {
+            print("  × \(terminalText(node))  " + localized("探测失败", "Check failed"))
+            continue
         }
-        try Engine.validateCheckURL(url)
+        print("  ✓ \(terminalText(node))  \(delay) ms")
+        success = true
     }
-    let test = {
-        if command == "use" && name == "--auto" {
-            try engine.setSelection(automatic: true, url: url)
-        }
-        var success = false
-        for node in names {
-            guard let delay = try? engine.test(node, url: url) else {
-                print("  × \(terminalText(node))  " + localized("探测失败", "Check failed"))
-                continue
-            }
-            print("  ✓ \(terminalText(node))  \(delay) ms")
-            success = true
-            if command == "use" {
-                try engine.select(node)
-                if name != "--auto" { try engine.setSelection(automatic: false, url: url) }
-                print(localized("已选中 ", "Selected ") + terminalText(node))
-                return
-            }
-        }
-        if !success { throw UserError(command == "use" ? localized("候选均不可用，保留当前选择。", "All candidates failed. The current selection is still active.") : localized("节点均未通过连通性检查。", "None of the nodes passed the connectivity check.")) }
+    if !success {
+        throw UserError(localized("节点均未通过连通性检查。", "None of the nodes passed the connectivity check."))
     }
-    if command == "use" { try paths.locked(test) }
-    else { try test() }
 }
 
 func service(_ args: [String], _ paths: Paths) throws {
@@ -492,7 +462,7 @@ func execute(_ args: [String], _ paths: Paths) throws {
             return try ManagedCore(paths)
         }
         try core.wait()
-    case "test", "use": try useOrTest(command, rest, paths)
+    case "test": try testNodes(rest, paths)
     case "check":
         if rest.first == "node" {
             guard rest.count == 2 || (rest.count == 4 && rest[2] == "--url") else {

@@ -86,11 +86,6 @@ private func commandOptions(for command: String) -> [CommandChoice] {
                   help: localized("创建或删除自定义组，或调整现有组的成员与顺位。可在规则或预设中选择代理组作为出口。",
                                   "Create or delete named groups, or edit the membership and order of any group. Select a group as the outbound for a rule or preset."))
         ]
-    case "use":
-        return [
-            .init("--auto", localized("主备自动切换", "Enable ordered failover"), ["use", "--auto"], isValue: true,
-                  help: localized("按节点顺位自动切换主备。", "Follow node priority and switch automatically."))
-        ]
     case "check":
         return [
             .init("node", localized("检测指定节点", "Check a specific node"), ["check", "node"], needsArgument: true,
@@ -160,7 +155,7 @@ private func commandOptions(for command: String) -> [CommandChoice] {
 }
 
 func isConsoleCommand(_ name: String) -> Bool {
-    ["preview", "setup", "use"].contains(name) || commands.contains { $0.title == name }
+    ["preview", "setup"].contains(name) || commands.contains { $0.title == name }
 }
 
 var consoleCommandList: String { commands.map { "/" + $0.title }.joined(separator: "  ") }
@@ -660,7 +655,6 @@ private final class TerminalConsole {
             let query = draft.text.dropFirst().split(whereSeparator: \.isWhitespace).first?.lowercased() ?? ""
             // Existing explicit commands remain usable without cluttering the menu.
             if query == "setup" { return [CommandChoice("setup", "")] }
-            if query == "use" { return [CommandChoice("use", "", needsArgument: true)] }
             return commands.filter { $0.title.hasPrefix(query) }
         }
         switch first {
@@ -684,24 +678,15 @@ private final class TerminalConsole {
             }
         case "nodes" where argument == "group":
             return [CommandChoice("group", localized("编辑默认代理组", "Edit the default proxy group"), ["nodes", "group"])]
-        case "use":
-            let order = activeSystem?.order ?? profile?.order ?? []
-            let nodes = activeSystem?.nodes ?? profile?.nodes ?? []
-            let orderedNodes = order.compactMap { name in nodes.first { $0.name == name } }
-            let query = completionQuery(argument)
-            return nodeChoices(orderedNodes, matching: query, command: [first], selected: displayedSelectedNode) +
-                commandOptions(for: first).filter { $0.title.hasPrefix(query.lowercased()) }
         default: break
         }
         return commandOptions(for: first).filter { $0.title.hasPrefix(argument.lowercased()) }
     }
 
-    private func nodeChoices(_ nodes: [Node], matching query: String, command: [String],
-                             selected: String? = nil) -> [CommandChoice] {
+    private func nodeChoices(_ nodes: [Node], matching query: String, command: [String]) -> [CommandChoice] {
         nodes.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }.map { node in
-            let marker = selected == node.name ? localized("当前 · ", "Current · ") : ""
             let endpoint = node.endpoint == "域名" ? localized("域名", "Hostname") : node.endpoint
-            return CommandChoice(terminalText(node.name), marker + "\(node.protocolName) / \(endpoint)",
+            return CommandChoice(terminalText(node.name), "\(node.protocolName) / \(endpoint)",
                                  command + [node.name], isValue: true, panelTitle: localized("匹配节点", "Matching nodes"))
         }
     }
@@ -1320,7 +1305,6 @@ private final class TerminalConsole {
         if let system {
             rows.append([localized("部署状态", "Deployment"), protectionPhaseText(system)])
             if let node = system.selectedNode { rows.append([localized("系统节点", "System node"), terminalText(node)]) }
-            if let automatic = system.automaticSelection { rows.append(selectionField(automatic)) }
             if let seconds = system.secondsLeft { rows.append([localized("回退倒计时", "Rollback in"), localized("约 \(seconds) 秒", "About \(seconds) seconds")]) }
             if let error = system.lastError { rows.append([localized("诊断", "Diagnostics"), terminalText(error)]) }
         }
@@ -1330,7 +1314,6 @@ private final class TerminalConsole {
                 rows.append([localized("回环监听", "Loopback"), "127.0.0.1:\(port)"])
             }
             if let node = status.selectedNode { rows.append([localized("当前节点", "Current node"), terminalText(node)]) }
-            if let automatic = status.automaticSelection { rows.append(selectionField(automatic)) }
         }
         let title = systemControls ? localized("系统代理", "System proxy") : localized("运行状态", "Status")
         let shortcuts = systemControls ? systemActionRows :
@@ -1341,10 +1324,6 @@ private final class TerminalConsole {
             notes = [ConsoleLine(""), ConsoleLine(guide, .muted)]
         }
         showResult(title, lines: notes, table: ConsoleTable(rows: rows), shortcuts: shortcuts)
-    }
-
-    private func selectionField(_ automatic: Bool) -> [String] {
-        [localized("节点选择", "Selection"), automatic ? localized("主备自动", "Automatic failover") : localized("手动固定", "Pinned")]
     }
 
     private func showPresets() {
@@ -1722,7 +1701,6 @@ private final class TerminalConsole {
         } else if isArgument, let (command, _) = argumentContext {
             if command == "lang" { caption = localized("语言", "Language") }
             else if command == "presets" { caption = localized("分流预设", "Routing presets") }
-            else if command == "use" { caption = localized("匹配节点", "Matching nodes") }
             else if command == "system" { caption = localized("系统代理", "System proxy") }
             else { caption = localized("后续选项", "Next options") }
         }

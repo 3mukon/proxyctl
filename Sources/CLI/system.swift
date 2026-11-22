@@ -81,7 +81,6 @@ func syncRoutingPolicy(_ profile: ManagedProfile, paths: Paths, includeDefaultOr
 func isProtectedConsoleCommand(_ args: [String]) -> Bool {
     switch args.first {
     case "rules": return args.dropFirst().first.map { !["upstream", "default"].contains($0) } ?? true
-    case "use": return true
     case "nodes", "check": return args.count == 1
     default: return false
     }
@@ -116,7 +115,6 @@ func systemStatusLines(_ status: ProtectionStatus) -> [String] {
         lines.append(boot ? localized("开机自启   已启用", "Start at boot   On") : localized("开机自启   已停用", "Start at boot   Off"))
     }
     if let node = status.selectedNode { lines.append(localized("系统节点   ", "System node    ") + terminalText(node)) }
-    if let automatic = status.automaticSelection { lines.append(selectionModeLine(automatic)) }
     if let seconds = status.secondsLeft { lines.append(localized("回退倒计时  约 \(seconds) 秒", "Rollback in about \(seconds) seconds")) }
     if let error = status.lastError { lines.append(localized("诊断       ", "Diagnostics    ") + terminalText(error)) }
     return lines
@@ -400,9 +398,6 @@ func system(_ args: [String], _ paths: Paths) throws {
         } else {
             try runInstalledSystemCommand("rules", rest)
         }
-    case "use":
-        guard rest.count == 1 else { throw UserError("用法：proxyctl system use NODE | --auto") }
-        try runInstalledSystemCommand(action, rest)
     default:
         throw UserError("未知的系统命令。运行 proxyctl system 查看用法。")
     }

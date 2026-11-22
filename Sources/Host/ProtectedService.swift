@@ -11,7 +11,6 @@ struct ProtectionStatus: Codable {
     let nodes: [Node]
     let order: [String]
     let lastError: String?
-    let automaticSelection: Bool?
     let hasUpstream: Bool?
     let startsAtBoot: Bool?
     let verified: Bool?
@@ -113,7 +112,6 @@ struct ProtectedService {
                                        firewallLoaded: filter.active(), secondsLeft: remaining,
                                        selectedNode: name, nodes: engine.profile.nodes,
                                        order: engine.profile.order, lastError: error,
-                                       automaticSelection: engine.selectionPreference().automatic,
                                        hasUpstream: engine.profile.upstream != nil, startsAtBoot: startsAtBoot,
                                        verified: state.isVerified, nodeRuleTargets: engine.profile.routing.ruleNodes,
                                        groupRuleTargets: engine.profile.routing.ruleGroups.isEmpty ? nil : engine.profile.routing.ruleGroups,
@@ -669,23 +667,6 @@ struct ProtectedService {
         print("IPv4、IPv6 路由和 TUN 连通性已通过 · PF \(filter.active() ? "生效" : "待验证")")
     }
 
-    func use(_ node: String) throws {
-        let state = try record()
-        let engine = try Engine(paths, system: true)
-        let names = node == "--auto" ? engine.profile.order : [node]
-        if node == "--auto" { try engine.setSelection(automatic: true, url: probeURL) }
-        guard names.allSatisfy(engine.profile.order.contains) else { throw UserError("节点不在系统策略组内。") }
-        for name in names {
-            guard let time = try? engine.measure(name, url: probeURL) else { continue }
-            try engine.select(name)
-            if node != "--auto" { try engine.setSelection(automatic: false, url: probeURL) }
-            try publish(state)
-            print("已切换到 \(terminalText(name)) · \(time) ms")
-            return
-        }
-        throw UserError("候选节点均不可用，已保留当前选择。")
-    }
-
     private func rules(_ args: [String]) throws {
         let engine = try Engine(paths, system: true)
         let files = engine.profile.routing.ruleFiles(in: privateState)
@@ -747,7 +728,6 @@ struct ProtectedService {
                 try stop(keepVerification: false)
                 print("已回退系统隧道、DNS 和 Proxyctl 的 PF 规则。")
             case ("check", 0): try check()
-            case ("use", 1): try use(args[0])
             case ("rules", _): try rules(args)
             default: throw UserError("未知的系统服务操作。")
             }

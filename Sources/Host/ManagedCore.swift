@@ -1,47 +1,22 @@
 import Darwin
 import Foundation
 
-struct SelectionPreference: Codable, Equatable {
-    let scope: String
-    let automatic: Bool
-    let url: String
-}
-
-extension Engine {
-    private var preferenceFile: URL { paths.state.appendingPathComponent("selection-mode.json") }
-
-    func selectionPreference() -> SelectionPreference {
-        if let data = try? localData(preferenceFile),
-           let saved = try? JSONDecoder().decode(SelectionPreference.self, from: data),
-           saved.scope == profile.secret {
-            return saved
-        }
-        return SelectionPreference(scope: profile.secret, automatic: true, url: probeURL)
-    }
-
-    func setSelection(automatic: Bool, url: String) throws {
-        try Engine.validateCheckURL(url)
-        let state = SelectionPreference(scope: profile.secret, automatic: automatic, url: url)
-        try savePrivate(JSONEncoder().encode(state), to: preferenceFile)
-    }
-
-    func automaticallySelect() {
-        let preference = selectionPreference()
-        let groups = (preference.automatic ? [.proxy] : []) + profile.routing.groups.map(\.target)
+private extension Engine {
+    func automaticallySelect(probeAt url: String) {
+        let groups = [RuleTarget.proxy] + profile.routing.groups.map(\.target)
         var health: [String: Bool] = [:]
         for group in groups {
             let order = profile.order(for: group)
             guard order.count > 1, let current = try? self.current(in: group) else { continue }
             let candidate = order.first { name in
                 if let cached = health[name] { return cached }
-                let reachable = (try? measure(name, url: preference.url)) != nil
+                let reachable = (try? measure(name, url: url)) != nil
                 health[name] = reachable
                 return reachable
             }
             guard let candidate, current != candidate else { continue }
             try? paths.locked {
-                guard group != .proxy || selectionPreference() == preference,
-                      try self.current(in: group) == current else { return }
+                guard try self.current(in: group) == current else { return }
                 try select(candidate, in: group)
             }
         }
@@ -59,7 +34,7 @@ struct ManagedCore {
         try process.run()
     }
 
-    func wait() throws {
+    func wait(probeAt url: String = probeURL) throws {
         let signalQueue = DispatchQueue(label: "proxyctl.shutdown")
         let signals = [SIGINT, SIGTERM, SIGHUP].map { signum in
             signal(signum, SIG_IGN)
@@ -73,7 +48,7 @@ struct ManagedCore {
         let monitor = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "proxyctl.failover"))
         monitor.schedule(deadline: .now() + .seconds(2), repeating: .seconds(8))
         monitor.setEventHandler {
-            if process.isRunning { engine.automaticallySelect() }
+            if process.isRunning { engine.automaticallySelect(probeAt: url) }
         }
         monitor.resume()
         process.waitUntilExit()
@@ -87,9 +62,4 @@ struct ManagedCore {
             throw ExitCode(value: status)
         }
     }
-}
-
-func selectionModeLine(_ automatic: Bool) -> String {
-    automatic ? localized("节点选择     主备自动", "Selection    Automatic failover") :
-        localized("节点选择     手动固定", "Selection    Pinned")
 }

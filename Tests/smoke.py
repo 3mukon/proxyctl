@@ -47,7 +47,8 @@ class Node(socketserver.StreamRequestHandler):
             time.sleep(0.025)
             self.server.received += 1
             if b"/health" in request:
-                self.wfile.write(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                status = b"204 No Content" if self.server.healthy else b"503 Service Unavailable"
+                self.wfile.write(b"HTTP/1.1 " + status + b"\r\nConnection: close\r\n\r\n")
                 return
             body = self.server.identity.encode()
             persistent = b"/persistent" in request
@@ -66,6 +67,7 @@ class Server(socketserver.ThreadingTCPServer):
         self.name = name
         self.identity = "served by " + name
         self.available = True
+        self.healthy = True
         self.received = 0
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
 
@@ -140,6 +142,11 @@ def wait_for(condition, limit=12):
             return
         time.sleep(.1)
     assert condition(), "Condition did not become true"
+
+
+def failover_preview(fixture, state, bundle):
+    return subprocess.Popen([str(fixture), str(state), str(bundle / "libexec/sing-box")],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
 def verify_outer_proxy(inner_port, outer):
@@ -375,7 +382,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert b"H/nodes " in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\x1b", "输入 / 查看命令", wait_for_input=True)
         type_keys(b"/nodes add with-an-argument\r", "复制分享链接，再运行 /nodes add。")
-        type_keys(b"/use --auto\r\r", "用 /groups edit 编辑组成员和顺位。", wait_for_input=True)
+        type_keys(b"/use --auto\r", "输入 / 查看日常命令。", wait_for_input=True)
         nodes_query = command + ["nodes", "--json"]
         original_group = json.loads(subprocess.check_output(nodes_query, timeout=8))
         type_keys(b"/nodes group\r\r", "默认代理组 · 本机配置", wait_for_input=True)
@@ -402,28 +409,13 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert "保存更改".encode() in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\x1b", "输入 / 查看命令", wait_for_input=True)
         assert json.loads(subprocess.check_output(nodes_query, timeout=8)) == original_group
-        type_keys(b"/use ", "› 美国", wait_for_input=True)
-        type_keys(b"\x1b", "Enter 或 ↑↓ 选择  Esc 收起", wait_for_input=True)
-        type_keys(b"\r", "› 美国", wait_for_input=True)
-        type_keys(b"\x1b", "Esc 收起", wait_for_input=True)
-        type_keys(b"\x1b", "Enter 显示选项  Esc 清空", wait_for_input=True)
-        type_keys(b"\r", "› 美国", wait_for_input=True)
-        type_keys(b"\x1b\x1b\x1b", "输入 / 查看命令", wait_for_input=True)
         type_keys(b"\x1b", "代理概览", wait_for_input=True)
-        process_with_use = preview("美国")
+        running_preview = preview("美国")
         try:
-            group_edit = subprocess.run(command + ["nodes", "group", "美国 IPv6"], capture_output=True, timeout=8)
+            group_edit = subprocess.run(command + ["groups", "default", "美国 IPv6"], capture_output=True, timeout=8)
             assert group_edit.returncode != 0 and "结束本机回环诊断后再保存代理组".encode() in group_edit.stderr
-            type_keys(b"/use ", "匹配节点")
-            type_keys(b"IPv6", "› 美国 IPv6")
-            type_keys(b"\t", 'H/use "美国 IPv6" ')
-            type_keys(f"--url {health}\r".encode(), "已选中 美国 IPv6", wait_for_input=True)
-            assert fetch("http://api.anthropic.com/payload").stdout == "served by 美国 IPv6"
-            type_keys(f'/use "美国" --url {health}\r'.encode(), "已选中 美国\x1b[", wait_for_input=True)
-            selected = fetch("http://api.anthropic.com/payload")
-            assert selected.stdout == "served by 美国", selected
         finally:
-            stop(process_with_use)
+            stop(running_preview)
         type_keys(b"/presets \x1b[B", "› enable")
         type_keys(b"\x1b", "Enter 执行  ↑↓ 选择  Esc 收起", wait_for_input=True)
         frame = result.rsplit(b"\x1b[2J", 1)[-1]
@@ -681,7 +673,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
             (b"/hel", "› /help"),
             (b"/presets rou", "› route"),
             (b"/setup im", "› import"),
-            (b"/use IPv6", "› 美国 IPv6"),
+            (b"/check node IPv6", "› 美国 IPv6"),
             (b"/lang Eng", "› English"),
             (b"/presets enable ope", "› OpenAI"),
             (b"/presets disable ope", "› OpenAI"),
@@ -909,7 +901,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
             process.wait(timeout=5)
 
 
-def verify(bundle, scratch, first, second, outside):
+def verify(bundle, scratch, fixture, first, second, outside):
     source = scratch / "fixture.json"
     state = scratch / "state with spaces"
     home = scratch / "install with spaces"
@@ -942,6 +934,8 @@ def verify(bundle, scratch, first, second, outside):
     cli("legacy", ok=False)
     cli("setup", "--legacy", ok=False)
     cli("nodes", "--legacy", ok=False)
+    cli("use", "--auto", ok=False)
+    cli("system", "use", "--auto", ok=False)
     cli("system", "_manage-installed", "en", "shell", "check", ok=False)
     cli("setup", str(source), "--port", str(port), "--control-port", str(control), "--default", "proxy",
         "--node", first.name, "--node", second.name.lower())
@@ -976,8 +970,12 @@ def verify(bundle, scratch, first, second, outside):
     planned = json.loads(cli("system", "plan", "--json"))
     assert planned["fallback"] == "direct" and planned["presets"] == ["claude", "openai"]
 
-    def preview(expected):
-        process = subprocess.Popen(command + ["preview"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    def preview(expected, automatic=False):
+        if automatic:
+            installed = (home / ".local/bin/proxyctl").resolve().parents[1]
+            process = failover_preview(fixture, state, installed)
+        else:
+            process = subprocess.Popen(command + ["preview"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
             for _ in range(24):
                 if process.poll() is not None:
@@ -999,7 +997,13 @@ def verify(bundle, scratch, first, second, outside):
         result = fetch(url)
         assert result.returncode == 0 and result.stdout == expected.identity, result
 
-    process = preview(first.name)
+    old_preference = state / "selection-mode.json"
+    old_preference.write_text(json.dumps({
+        "scope": json.loads(baseline)["experimental"]["clash_api"]["secret"],
+        "automatic": False,
+        "url": health,
+    }))
+    process = preview(first.name, automatic=True)
     try:
         mode = cli("status")
         capture = mode.splitlines()[0].partition(" · ")[0]
@@ -1008,24 +1012,24 @@ def verify(bundle, scratch, first, second, outside):
         assert first.name in cli("check", "--url", health)
         assert second.name in cli("test", second.name, "--url", health)
         cli("setup", str(source), "--node", outside.name, ok=False)
-        cli("use", outside.name, "--url", health, ok=False)
         first.available = False
-        output = cli("use", "--auto", "--url", health)
+        output = cli("test", "--url", health)
         assert output.index(first.name) < output.index(second.name) and "探测失败" in output
+        wait_for(lambda: json.loads(cli("nodes", "--json"))["selected"] == second.name)
         payload(second)
         assert process.poll() is None
         second.available = False
-        cli("use", "--auto", "--url", health, ok=False)
+        cli("test", "--url", health, ok=False)
         assert json.loads(cli("nodes", "--json"))["selected"] == second.name
         assert outside.received == 0
-        first.available = second.available = True
     finally:
         stop(process)
+        first.available = second.available = True
 
-    process = preview(second.name)
+    process = preview(second.name, automatic=True)
     try:
         payload(second)
-        assert first.name in cli("use", first.name, "--url", health)
+        wait_for(lambda: json.loads(cli("nodes", "--json"))["selected"] == first.name)
         payload(first)
         assert process.poll() is None
     finally:
@@ -1071,14 +1075,13 @@ def verify(bundle, scratch, first, second, outside):
 
 
 
-def verify_policy(bundle, scratch, first, second, upstream):
+def verify_policy(bundle, scratch, fixture, first, second, upstream):
     source = scratch / "policy.json"
     state = scratch / "editable policy"
     port, controller = unused_ports()
     command = [str(bundle / "bin/proxyctl"), "--state-dir", str(state)]
     order = {"type": "selector", "tag": "Preferred", "outbounds": [first.name, second.name]}
     source.write_text(json.dumps({"outbounds": [first.outbound(), second.outbound(), upstream.outbound(), order]}))
-    health = "http://127.0.0.1:9/health"
 
     def cli(*args, ok=True):
         result = subprocess.run(command + list(args), capture_output=True, text=True, timeout=20)
@@ -1131,11 +1134,9 @@ def verify_policy(bundle, scratch, first, second, upstream):
     assert plan["upstream"] and plan["order"] == order["outbounds"]
     assert {r["value"] for r in plan["rules"]} == {"api.anthropic.com", "external.test", "192.0.2.0/24"}
 
-    process = subprocess.Popen(command + ["preview"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    process = failover_preview(fixture, state, bundle)
     try:
         wait_for(lambda: selected(first))
-        cli("use", "--auto", "--url", health)
-        assert json.loads(cli("status", "--json"))["automaticSelection"]
         assert fetch("http://api.anthropic.com/payload").stdout == first.identity
         assert fetch("http://new.external.test/payload").stdout == upstream.identity
         upstream.available = False
@@ -1167,15 +1168,11 @@ def verify_policy(bundle, scratch, first, second, upstream):
                 header += byte
             assert b" 200 " in header
             assert persistent(held) == first.identity
-            cli("use", second.name, "--url", health)
-            assert not json.loads(cli("status", "--json"))["automaticSelection"]
+            first.available = False
+            wait_for(lambda: selected(second))
             assert fetch("http://api.anthropic.com/payload").stdout == second.identity
             assert persistent(held) == first.identity
 
-        cli("use", "--auto", "--url", health)
-        first.available = False
-        wait_for(lambda: selected(second))
-        assert fetch("http://api.anthropic.com/payload").stdout == second.identity
         second.available = False
         assert fetch("http://api.anthropic.com/payload").returncode != 0
         assert fetch("http://new.external.test/payload").stdout == upstream.identity
@@ -1341,13 +1338,12 @@ def verify_catch_all(bundle, scratch, primary, upstream):
         assert subprocess.check_output(command + ["presets", "--json"], env=env, text=True, timeout=8) == policy
 
 
-def verify_node_routes(bundle, scratch, primary, backup, dedicated):
+def verify_node_routes(bundle, scratch, fixture, primary, backup, dedicated):
     state = scratch / "node routes"
     source = scratch / "fixed-nodes.json"
     source.write_text(json.dumps({"outbounds": [primary.outbound(), backup.outbound(), dedicated.outbound()]}))
     port, controller = unused_ports()
     profile = state / "profile.json"
-    health = "http://127.0.0.1:9/health"
     command = [str(bundle / "bin/proxyctl"), "--state-dir", str(state)]
     pin = f"node:{dedicated.name}"
     primary_pin = f"node:{primary.name}"
@@ -1392,15 +1388,15 @@ def verify_node_routes(bundle, scratch, primary, backup, dedicated):
         thread = threading.Thread(target=direct.serve_forever, daemon=True)
         thread.start()
         direct_url = f"http://localhost:{direct.server_address[1]}/payload"
-        process = subprocess.Popen(command + ["preview"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process = failover_preview(fixture, state, bundle)
         try:
             wait_for(lambda: fetch("http://api.anthropic.com/").stdout == primary.identity)
             assert fetch("http://api.openai.com/").stdout == dedicated.identity
             assert fetch("http://unmatched.test/").stdout == dedicated.identity
             assert fetch("http://work.test/").stdout == primary.identity
             assert fetch("http://192.0.2.30/").stdout == primary.identity
-            cli("use", backup.name, "--url", health)
-            assert fetch("http://api.anthropic.com/").stdout == backup.identity
+            primary.healthy = False
+            wait_for(lambda: fetch("http://api.anthropic.com/").stdout == backup.identity)
             assert fetch("http://override.test/").stdout == backup.identity
             assert fetch("http://api.openai.com/").stdout == dedicated.identity
             assert fetch("http://unmatched.test/").stdout == dedicated.identity
@@ -1419,6 +1415,7 @@ def verify_node_routes(bundle, scratch, primary, backup, dedicated):
             assert fetch(direct_url).stdout == "served directly"
             assert process.poll() is None
         finally:
+            primary.healthy = True
             dedicated.available = True
             stop(process)
             direct.shutdown()
@@ -1435,7 +1432,7 @@ def verify_node_routes(bundle, scratch, primary, backup, dedicated):
     assert any(rule["target"] == "node:Added: Node" for rule in json.loads(cli("system", "plan", "--json"))["rules"])
 
 
-def verify_group_routes(bundle, scratch, primary, backup, dedicated):
+def verify_group_routes(bundle, scratch, fixture, primary, backup, dedicated):
     state = scratch / "group routes"
     source = scratch / "group-nodes.json"
     source.write_text(json.dumps({"outbounds": [primary.outbound(), backup.outbound(), dedicated.outbound()]}))
@@ -1444,7 +1441,6 @@ def verify_group_routes(bundle, scratch, primary, backup, dedicated):
     group = "Git Work"
     target = f"group:{group}"
     main_target = "group:Main Work"
-    health = "http://127.0.0.1:9/health"
 
     def cli(*args, ok=True):
         result = subprocess.run(command + list(args), capture_output=True, text=True, timeout=20)
@@ -1484,10 +1480,9 @@ def verify_group_routes(bundle, scratch, primary, backup, dedicated):
                                "--proxy", f"http://127.0.0.1:{port}", f"http://{host}/"],
                               capture_output=True, text=True, timeout=3)
 
-    process = subprocess.Popen(command + ["preview"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    process = failover_preview(fixture, state, bundle)
     try:
         wait_for(lambda: fetch("github.test").stdout == dedicated.identity)
-        cli("use", "--auto", "--url", health)  # Point background checks at the fixture.
         assert fetch("single.test").stdout == fetch("unmatched.test").stdout == dedicated.identity
         healthy = ("api.anthropic.com", "api.openai.com")
         assert all(fetch(host).stdout == primary.identity for host in healthy)
@@ -1562,13 +1557,22 @@ if __name__ == "__main__":
             str(product / "Tests/ProtectionLifecycle.swift"), "-o", str(lifecycle),
         ], check=True, timeout=45)
         subprocess.run([str(lifecycle)], check=True, timeout=5)
+        fixture = scratch / "managed-core-fixture"
+        host = product / "Sources/Host"
+        subprocess.run([
+            "/usr/bin/xcrun", "swiftc", "-module-cache-path", str(bundle.parent / "module-cache"),
+            *(str(path) for path in sorted((product / "Sources/Profiles").glob("*.swift"))),
+            *(str(host / path) for path in
+              ("Command.swift", "Host.swift", "OperationLock.swift", "Engine.swift", "ManagedCore.swift", "Probe.swift")),
+            str(product / "Tests/ManagedCoreFixture.swift"), "-o", str(fixture),
+        ], check=True, timeout=60)
         verify_terminal_handoff(bundle, scratch, product)
         with Server("美国") as first, Server("美国 IPv6") as second, Server("Other Region") as outside:
-            verify(bundle, scratch, first, second, outside)
-            verify_policy(bundle, scratch, first, second, outside)
+            verify(bundle, scratch, fixture, first, second, outside)
+            verify_policy(bundle, scratch, fixture, first, second, outside)
             verify_share_links(bundle, scratch)
             verify_catch_all(bundle, scratch, first, outside)
-            verify_node_routes(bundle, scratch, first, second, outside)
-            verify_group_routes(bundle, scratch, first, second, outside)
+            verify_node_routes(bundle, scratch, fixture, first, second, outside)
+            verify_group_routes(bundle, scratch, fixture, first, second, outside)
             verify_routing_update(bundle, scratch, product, first, second)
     print("Passed bilingual console, node import, proxy groups, failover, live routing policies, and TUN/PF configuration checks.")
