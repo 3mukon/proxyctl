@@ -38,6 +38,7 @@ private struct ConsoleForm {
 
 private let presetEditCommand = ["presets", "edit"]
 private let newPresetOption = "--new"
+private let groupEditCommand = ["groups", "edit"]
 
 private enum EscapeStep {
     case deselect, dismissCompletions, backFromInput, backFromForm, backFromResult
@@ -47,19 +48,17 @@ private var commands: [CommandChoice] {
     [
         .init("status", localized("查看全机接管、防火墙和当前节点", "Show system capture, firewall status, and the active node"),
               help: localized("查看全机接管、PF 防护、开机自启和当前节点。", "See system capture, PF protection, startup at boot, and the active node.")),
-        .init("nodes", localized("查看或添加节点，编辑默认代理组", "View or add nodes and edit the default proxy group"),
-              help: localized("查看节点的协议、地址类型和它在默认代理组中的顺位。", "See each node’s protocol, address type, and priority in the default proxy group.")),
-        .init("use", localized("固定默认代理组的节点，或按顺位自动切换", "Pin a node in the default group or follow node priority"), needsArgument: true,
-              help: localized("内核运行时，指定默认组的当前节点，或用 --auto 恢复按顺位自动选择。", "While the engine runs, choose the active group member or use --auto to follow node priority.")),
+        .init("nodes", localized("查看节点、添加分享链接或导入文件", "List nodes, add share links, or import a file"),
+              help: localized("查看节点的协议、地址类型和默认组顺位。", "See node protocols, address types, and priority in the default group.")),
+        .init("groups", localized("查看代理组及其主备顺位", "View proxy groups and their failover order"),
+              help: localized("查看默认组和自定义组的顺位与当前节点。代理组按顺位自动切换。",
+                              "See each group's order and current node. Groups automatically select the first reachable member.")),
         .init("check", localized("检查当前代理路径，也可单独检测指定节点", "Check the active proxy path or test a specific node"),
               help: localized("检查正在运行的全机接管或本机代理。两者均未运行时，单独测试首选节点。", "Check system capture or the running local proxy. If neither is active, test the first node in isolation.")),
-        .init("rules", localized("增删分流规则，设置其余流量的出口", "Add or remove rules and choose where unmatched traffic goes"),
+        .init("rules", localized("增删规则，设置其余流量和外部代理", "Manage rules, unmatched traffic, and the external proxy"),
               help: localized("查看自定义规则和「其余全部」当前使用的出口。", "List custom rules and see where unmatched traffic goes.")),
         .init("presets", localized("启停分流预设、编辑匹配项、选择出口", "Turn presets on or off, edit matches, and choose outbounds"),
               help: localized("查看 Claude、OpenAI 和自定义分流预设。", "See the Claude, OpenAI, and custom routing presets.")),
-        .init("setup", localized("导入节点文件或编辑外部代理地址", "Import a node file or edit the external proxy address"),
-              help: localized("打开节点导入向导，也可在这里管理外部代理地址。",
-                              "Open the node import guide or choose a subcommand to manage an external proxy address.")),
         .init("system", localized("启停系统代理、回退和开机自启", "Manage the system proxy, recovery, and startup at boot"),
               help: localized("查看系统状态。启动会验证隧道和防火墙。开机自启可单独设置。",
                               "View system status. Start verifies the tunnel and firewall. Startup at boot is separate.")),
@@ -76,8 +75,16 @@ private func commandOptions(for command: String) -> [CommandChoice] {
         return [
             .init("add", localized("从剪贴板添加分享链接", "Add share links from clipboard"), ["nodes", "add"],
                   help: localized("从剪贴板导入节点分享链接。", "Import share links from the clipboard.")),
-            .init("group", localized("编辑默认代理组", "Edit the default proxy group"), ["nodes", "group"],
-                  help: localized("用现有节点编辑本机默认代理组的成员和顺位。", "Edit local default group membership and priority using existing nodes."))
+            .init("import", localized("从 sing-box JSON 导入节点", "Import nodes from a sing-box JSON file"), ["nodes", "import"],
+                  help: localized("导入节点，选择默认组顺位或使用文件里的代理组。",
+                                  "Import nodes and set default priority or use a group from the source file."))
+        ]
+    case "groups":
+        return [
+            .init("edit", localized("创建代理组，调整组内节点顺位", "Create a group or change its members and order"),
+                  groupEditCommand, needsArgument: true,
+                  help: localized("创建或删除自定义组，或调整现有组的成员与顺位。可在规则或预设中选择代理组作为出口。",
+                                  "Create or delete named groups, or edit the membership and order of any group. Select a group as the outbound for a rule or preset."))
         ]
     case "use":
         return [
@@ -97,8 +104,11 @@ private func commandOptions(for command: String) -> [CommandChoice] {
             .init("remove", localized("移除分流规则", "Remove a routing rule"), ["rules", "remove"], needsArgument: true,
                   help: localized("从已有分流规则中选择要移除的一条。", "Select an existing routing rule to remove.")),
             .init("default", localized("设置其余流量的出口", "Choose where unmatched traffic goes"), ["rules", "default"], needsArgument: true,
-                  help: localized("为未匹配分流规则的流量选择出口。可选直连、默认代理组、指定节点或外部代理。首次使用外部代理可在这里填写地址。",
-                                  "Choose Direct, the default proxy group, a specific node, or an external proxy for unmatched traffic. You can enter its address here on first use."))
+                  help: localized("为未匹配分流规则的流量选择直连、代理组、指定节点或外部代理。首次使用外部代理可在这里填写地址。",
+                                  "Choose Direct, a proxy group, a node, or the external proxy for unmatched traffic. Enter the external proxy address here on first use.")),
+            .init("upstream", localized("编辑外部代理地址", "Edit the external proxy address"), ["rules", "upstream"],
+                  help: localized("设置供分流规则、预设或其余流量使用的 SOCKS5 或 HTTP(S) 代理地址。",
+                                  "Set the SOCKS5 or HTTP(S) address available to rules, presets, and unmatched traffic."))
         ]
     case "presets":
         return [
@@ -126,7 +136,7 @@ private func commandOptions(for command: String) -> [CommandChoice] {
             .init("start", localized("验证并启动系统代理", "Verify and start the system proxy"), ["system", "start"],
                   help: localized("首次自动准备配置，依次验证 TUN 和 PF，通过后启用。失败时回退。",
                                   "Prepare the profile, verify TUN and PF, and confirm the deployment after both checks pass.")),
-            .init("apply", localized("应用本机预设和其余流量的出口", "Apply local presets and the catch-all"),
+            .init("apply", localized("重试应用待同步的分流配置", "Retry pending routing changes"),
                   ["system", "apply"], help: localized("应用待生效的路由设置。连接可能重连，PF 防护保持启用。",
                                                         "Apply pending routing settings. Connections may reconnect while PF stays enabled.")),
             .init("stop", localized("立即停止系统代理", "Stop the system proxy now"), ["system", "stop"]),
@@ -150,8 +160,7 @@ private func commandOptions(for command: String) -> [CommandChoice] {
 }
 
 func isConsoleCommand(_ name: String) -> Bool {
-    // An explicit preview remains available for loopback diagnostics.
-    name == "preview" || commands.contains { $0.title == name }
+    ["preview", "setup", "use"].contains(name) || commands.contains { $0.title == name }
 }
 
 var consoleCommandList: String { commands.map { "/" + $0.title }.joined(separator: "  ") }
@@ -618,7 +627,7 @@ private final class TerminalConsole {
            FileManager.default.fileExists(atPath: (arguments[1] as NSString).expandingTildeInPath) {
             return false
         }
-        let ignoresValueCase = command == "presets" || command == "rules"
+        let ignoresValueCase = ["presets", "rules", "groups"].contains(command)
         return !matches.contains { choice in
             guard !choice.needsArgument else { return false }
             if ignoresValueCase && choice.isValue {
@@ -649,6 +658,9 @@ private final class TerminalConsole {
         guard child == nil, draft.text.hasPrefix("/") else { return [] }
         guard let (first, argument) = argumentContext else {
             let query = draft.text.dropFirst().split(whereSeparator: \.isWhitespace).first?.lowercased() ?? ""
+            // Existing explicit commands remain usable without cluttering the menu.
+            if query == "setup" { return [CommandChoice("setup", "")] }
+            if query == "use" { return [CommandChoice("use", "", needsArgument: true)] }
             return commands.filter { $0.title.hasPrefix(query) }
         }
         switch first {
@@ -660,12 +672,18 @@ private final class TerminalConsole {
             }
         case "presets":
             return presetChoices(argument)
+        case "groups":
+            if let (action, tail) = nextArgument(argument), action == "edit" {
+                return groupEditorChoices(tail)
+            }
         case "rules":
             return ruleChoices(argument)
         case "check":
             if let (action, tail) = nextArgument(argument), action == "node" {
                 return nodeChoices(profile?.nodes ?? [], matching: completionQuery(tail), command: [first, action])
             }
+        case "nodes" where argument == "group":
+            return [CommandChoice("group", localized("编辑默认代理组", "Edit the default proxy group"), ["nodes", "group"])]
         case "use":
             let order = activeSystem?.order ?? profile?.order ?? []
             let nodes = activeSystem?.nodes ?? profile?.nodes ?? []
@@ -695,13 +713,15 @@ private final class TerminalConsole {
         switch action {
         case "default":
             let current = activeSystem == nil ? profile?.routing.fallback : activeSystem?.fallback
-            let targets = outboundOptions(nodeNames: profile?.nodes.map(\.name) ?? [], hasUpstream: true)
+            let targets = outboundOptions(nodeNames: profile?.nodes.map(\.name) ?? [],
+                                          groupNames: profile?.routing.groupNames ?? [], hasUpstream: true)
             return outboundChoices(targets, matching: tail, command: ["rules", action], current: current,
                                    needsUpstreamAddress: profile?.upstream == nil)
         case "add":
             guard let (value, query) = nextArgument(tail), let match = try? ruleValue(value) else { return [] }
             let available = activeSystem.map { $0.nodeRuleTargets ?? [] } ?? profile?.nodes.map(\.name) ?? []
-            let targets = outboundOptions(nodeNames: available, hasUpstream: ruleUpstreamAvailable)
+            let groups = activeSystem.map { $0.groupRuleTargets ?? [] } ?? profile?.routing.groupNames ?? []
+            let targets = outboundOptions(nodeNames: available, groupNames: groups, hasUpstream: ruleUpstreamAvailable)
             return outboundChoices(targets, matching: query, command: ["rules", action, match])
         case "remove": return ruleRemovalChoices(tail)
         default: return []
@@ -749,7 +769,8 @@ private final class TerminalConsole {
         case "route":
             if let (name, target) = nextArgument(tail), let index = RuleCollection.index(matching: name, in: groups) {
                 let group = groups[index]
-                let targets = outboundOptions(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil,
+                let targets = outboundOptions(nodeNames: profile.nodes.map(\.name), groupNames: profile.routing.groupNames,
+                                              hasUpstream: profile.upstream != nil,
                                               proxyOnly: group.builtIn)
                 return outboundChoices(targets, matching: target, command: ["presets", action, group.name], current: group.target)
             }
@@ -781,6 +802,24 @@ private final class TerminalConsole {
         }
         let new = CommandChoice(localized("新建预设", "New preset"), "", presetEditCommand + [newPresetOption], isValue: true)
         return query == newPresetOption ? [new] : choices + [new]
+    }
+
+    private func groupEditorChoices(_ input: String) -> [CommandChoice] {
+        guard let profile else { return [] }
+        let panel = localized("代理组", "Proxy groups")
+        let create = localized("新建代理组", "New proxy group")
+        let query = completionQuery(input)
+        let groups = [(RuleTarget.proxy.displayName, "default", profile.order)] +
+            profile.routing.groups.map { ($0.name, $0.name, $0.order) }
+        let choices = groups.filter { name, value, _ in
+            query.isEmpty || name.localizedCaseInsensitiveContains(query) || value == query
+        }.map { name, value, order in
+            CommandChoice(terminalText(name), order.map(terminalText).joined(separator: " → "),
+                          groupEditCommand + [value], isValue: true, panelTitle: panel)
+        }
+        let new = CommandChoice(create, "", groupEditCommand + ["--new"], isValue: true, panelTitle: panel)
+        if query == "--new" { return [new] }
+        return query.isEmpty || create.localizedCaseInsensitiveContains(query) ? choices + [new] : choices
     }
 
     private func handle(_ key: ConsoleKey) {
@@ -1025,10 +1064,10 @@ private final class TerminalConsole {
         dispatch(arguments)
     }
 
-    private func dispatch(_ arguments: [String]) {
+    private func dispatch(_ arguments: [String], label displayLabel: String? = nil) {
         form = nil
         formHistory.removeAll()
-        let label = "/" + arguments.map(quoted).joined(separator: " ")
+        let label = displayLabel ?? "/" + arguments.map(quoted).joined(separator: " ")
         draft.replace("")
         edited()
         guard isConsoleCommand(arguments[0]) else {
@@ -1212,6 +1251,8 @@ private final class TerminalConsole {
             }
         case ["presets"]:
             showPresets()
+        case ["groups"]:
+            showGroups()
         case _ where arguments.first == "help":
             let rows = try consoleHelpRows(arguments)
             let headings = [localized("命令", "Command"), localized("说明", "Description")]
@@ -1236,10 +1277,31 @@ private final class TerminalConsole {
             return [name, terminalText(node.protocolName).uppercased(), address, priorities[node.name].map(String.init) ?? "—"]
         }
         let headings = [localized("名称", "Name"), localized("协议", "Protocol"), localized("地址类型", "Address"), localized("顺位", "Priority")]
-        let shortcuts = local ? shortcutRows(for: "nodes", actions: ["group", "add"]) +
-            shortcutRows(for: "setup", actions: ["import"]) : []
+        let shortcuts = local ? shortcutRows(for: "nodes", actions: ["add", "import"]) : []
         showResult(localized("节点 · \(source)", "Nodes · \(source)"),
                    table: ConsoleTable(headings, rows: rows), shortcuts: shortcuts)
+    }
+
+    private func showGroups() {
+        let inventory = GroupInventory(paths, active: activeSystem)
+        let shortcuts = shortcutRows(for: "groups", actions: ["edit"])
+        guard !inventory.defaultOrder.isEmpty else {
+            showResult(localized("代理组", "Proxy groups"), lines: [ConsoleLine(addNodesFirst.localizedDescription, .muted)])
+            return
+        }
+        let defaultGroup = ProxyGroupStatus(name: RuleTarget.proxy.displayName, order: inventory.defaultOrder,
+                                            selectedNode: inventory.defaultMember)
+        let rows = ([defaultGroup] + inventory.groups).map { group in
+            [terminalText(group.name), group.order.map(terminalText).joined(separator: " → "),
+             group.selectedNode.map(terminalText) ?? "—"]
+        }
+        let source = inventory.system ? localized("系统配置", "System profile") : localized("本机配置", "Local profile")
+        let title = localized("代理组 · \(source)", "Proxy groups · \(source)")
+        let headings = [localized("名称", "Name"), localized("主备顺位", "Failover order"), localized("当前节点", "Current node")]
+        let notes = inventory.pending ? activeSystem.map {
+            [ConsoleLine(""), ConsoleLine(pendingPolicyMessage($0, lookup: "/system apply"), .muted)]
+        } ?? [] : []
+        showResult(title, lines: notes, table: ConsoleTable(headings, rows: rows), shortcuts: shortcuts)
     }
 
     private func showStatus(systemControls: Bool) {
@@ -1372,14 +1434,17 @@ private final class TerminalConsole {
         case "默认代理组", "Default proxy group": return .proxy
         case "外部代理", "External upstream": return .upstream
         default:
-            guard let prefix = ["节点 · ", "Node · "].first(where: value.hasPrefix) else { return nil }
-            return RuleTarget(rawValue: "node:" + value.dropFirst(prefix.count))
+            if let prefix = ["节点 · ", "Node · "].first(where: value.hasPrefix) {
+                return RuleTarget(rawValue: "node:" + value.dropFirst(prefix.count))
+            }
+            guard let prefix = ["代理组 · ", "Group · "].first(where: value.hasPrefix) else { return nil }
+            return RuleTarget(rawValue: "group:" + value.dropFirst(prefix.count))
         }
     }
 
     private func showRules(_ rows: [[String]], hasRules: Bool, notes: [ConsoleLine], title: String) {
         let headings = [localized("匹配条件", "Match"), localized("出口", "Outbound")]
-        let actions = hasRules ? ["add", "remove", "default"] : ["add", "default"]
+        let actions = (hasRules ? ["add", "remove"] : ["add"]) + ["default", "upstream"]
         showResult(title, lines: notes.isEmpty ? [] : [ConsoleLine("")] + notes,
                    table: ConsoleTable(headings, rows: rows), shortcuts: shortcutRows(for: "rules", actions: actions))
     }
@@ -1441,9 +1506,9 @@ private final class TerminalConsole {
 
     private var overviewShortcuts: [(String, String)] {
         let actions = profile != nil || activeSystem != nil
-            ? [("/nodes", localized("查看节点", "List nodes")), ("/presets", localized("分流预设", "Routing presets"))]
-            : [("/nodes add", localized("添加分享链接", "Add share links")), ("/setup", localized("导入 sing-box 文件", "Import sing-box file"))]
-        return actions + [("/lang", InterfaceLanguage.names)]
+            ? [("/nodes", localized("查看节点", "List nodes")), ("/groups", localized("代理组", "Proxy groups")), ("/presets", localized("分流预设", "Routing presets"))]
+            : [("/nodes add", localized("添加分享链接", "Add share links")), ("/nodes import", localized("导入 sing-box 文件", "Import sing-box file"))]
+        return actions
     }
 
     private func statusBadge(width: Int) -> String {
@@ -1506,9 +1571,9 @@ private final class TerminalConsole {
             return localized("Enter 显示选项", "Enter for options")
         }
         switch draft.text.trimmingCharacters(in: .whitespaces) {
-        case "/nodes group", "/setup upstream":
+        case "/nodes group", "/setup upstream", "/rules upstream":
             return localized("Enter 打开编辑页", "Enter Open editor")
-        case "/setup", "/setup import":
+        case "/setup", "/setup import", "/nodes import":
             return localized("输入文件路径  Enter 打开导入引导", "Type a file path  Enter for guided import")
         case "/rules add":
             return localized("输入域名或 IP/CIDR  Enter 打开引导", "Type a domain or IP/CIDR  Enter for guided entry")
@@ -1791,8 +1856,8 @@ private final class TerminalConsole {
 
 private extension TerminalConsole {
     var addNodesFirst: UserError {
-        UserError(localized("先用 /nodes add 添加分享链接，或用 /setup import 导入节点文件。",
-                            "Add a share link with /nodes add or import a node file with /setup import."))
+        UserError(localized("先用 /nodes add 添加分享链接，或用 /nodes import 导入节点文件。",
+                            "Add a share link with /nodes add or import a node file with /nodes import."))
     }
 
     func beginForm(_ arguments: [String]) throws -> Bool {
@@ -1800,7 +1865,9 @@ private extension TerminalConsole {
         case ["nodes", "group"]:
             guard FileManager.default.fileExists(atPath: paths.config.path) else { throw addNodesFirst }
             let local = try ManagedProfile(paths.config)
-            editDefaultGroup(local, order: local.order)
+            editProxyGroup(local, order: local.order)
+        case _ where arguments.starts(with: groupEditCommand):
+            try openProxyGroupEditor(arguments.dropFirst(groupEditCommand.count))
         case ["check", "node"]:
             guard profile != nil else { throw addNodesFirst }
             setCommandDraft(arguments)
@@ -1847,45 +1914,92 @@ private extension TerminalConsole {
         return true
     }
 
-    func editDefaultGroup(_ local: ManagedProfile, order: [String], replacing: Bool = false) {
-        let title = localized("默认代理组 · 本机配置", "Default proxy group · Local profile")
+    func openProxyGroupEditor(_ selection: ArraySlice<String>) throws {
+        guard let local = profile else { throw addNodesFirst }
+        switch selection.first {
+        case nil:
+            setCommandDraft(groupEditCommand)
+        case let name? where selection.count == 1 && name.lowercased() == "default":
+            editProxyGroup(local, order: local.order, returnCommand: groupEditCommand)
+        case "--new" where selection.count == 1:
+            present(ConsoleForm(title: localized("新建代理组", "New proxy group"),
+                                prompt: localized("输入代理组名称。", "Enter a proxy group name."),
+                                accept: { console, value in
+                let name = value.trimmingCharacters(in: .whitespaces)
+                guard ProxyGroup.validName(name), Profile.matchingName(name, in: local.routing.groupNames) == nil else {
+                    throw UserError(localized("请输入一个可用的代理组名称。", "Enter an unused proxy group name."))
+                }
+                console.editProxyGroup(local, order: [], name: name)
+            }, returnCommand: groupEditCommand))
+        case let name? where selection.count == 1:
+            guard let group = local.routing.groups.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
+                throw UserError(localized("未找到该代理组。", "Proxy group not found."))
+            }
+            editProxyGroup(local, order: group.order, name: group.name, returnCommand: groupEditCommand)
+        default:
+            throw UserError(localized("用 /groups edit 选择一个代理组。", "Choose a group from the /groups edit list."))
+        }
+    }
+
+    func editProxyGroup(_ local: ManagedProfile, order: [String], name: String? = nil,
+                        returnCommand: [String]? = nil, replacing: Bool = false) {
+        let existing = local.routing.groups.first { $0.name == name }
+        let storedOrder = name == nil ? local.order : existing?.order ?? []
+        let title = (name.map(terminalText) ?? RuleTarget.proxy.displayName) + localized(" · 本机配置", " · Local profile")
         var choices: [FormChoice] = []
-        if order != local.order {
+        if !order.isEmpty && order != storedOrder {
             choices.append(FormChoice(title: localized("保存更改", "Save changes")) { console in
-                let saved = try saveDefaultGroup(order, paths: console.paths, expected: local)
+                if let name {
+                    let revision = try local.routing.policy.revision()
+                    console.dispatch(["groups", "_set", name, revision] + order, label: "/groups edit " + quoted(name))
+                    return
+                }
+                let saved = try saveDefaultGroup(order, paths: console.paths, expectedRevision: local.defaultOrderRevision())
                 console.backFromForm()
                 console.refreshStatus()
-                var lines = [ConsoleLine(saved.map(terminalText).joined(separator: " → "))]
-                if console.status.protectedSystem != nil {
-                    lines.append(ConsoleLine(localized("下次准备系统配置时应用此代理组。",
-                                                       "The next system profile preparation applies this group."), .muted))
+                if returnCommand == groupEditCommand, usesLivePolicy(console.activeSystem) {
+                    console.dispatch(["system", "apply"], label: "/groups edit default")
+                    return
                 }
+                var lines = [ConsoleLine(saved.map(terminalText).joined(separator: " → "))]
+                if let system = console.activeSystem {
+                    lines.append(ConsoleLine(pendingPolicyMessage(system, lookup: "/system apply"), .muted))
+                }
+                console.draft.replace("")
+                console.edited()
                 console.showResult(localized("默认代理组已保存", "Default proxy group saved"), lines: lines)
             })
         }
-        choices += order.enumerated().map { index, name in
-            FormChoice(title: terminalText(name), detail: localized("顺位 \(index + 1)", "Priority \(index + 1)")) { console in
-                try console.editGroupMember(local, order: order, index: index)
+        choices += order.enumerated().map { index, member in
+            FormChoice(title: terminalText(member), detail: localized("顺位 \(index + 1)", "Priority \(index + 1)")) { console in
+                try console.editGroupMember(order, index: index) { console, next in
+                    console.editProxyGroup(local, order: next, name: name, returnCommand: returnCommand, replacing: true)
+                }
             }
         }
         let members = Set(order)
         choices += local.nodes.filter { !members.contains($0.name) }.map { node in
             FormChoice(title: terminalText(node.name), detail: localized("加入组", "Add to group")) { console in
-                console.editDefaultGroup(local, order: order + [node.name], replacing: true)
+                console.editProxyGroup(local, order: order + [node.name], name: name, returnCommand: returnCommand, replacing: true)
             }
+        }
+        if let name, existing != nil {
+            let delete = localized("删除代理组", "Delete proxy group")
+            choices.append(FormChoice(title: delete) { console in
+                console.confirmEdit(delete, prompt: terminalText(name), action: FormChoice(title: delete) { console in
+                    let revision = try local.routing.policy.revision()
+                    console.dispatch(["groups", "_remove", name, revision], label: "/groups edit " + quoted(name))
+                })
+            })
         }
         let prompt = localized("选择节点调整顺位、加入或移出组。",
                                "Choose a node to move, add, or remove.")
-        present(ConsoleForm(title: title, prompt: prompt, choices: choices), replacing: replacing)
+        present(ConsoleForm(title: title, prompt: prompt, choices: choices, returnCommand: returnCommand), replacing: replacing)
     }
 
-    func editGroupMember(_ local: ManagedProfile, order: [String], index: Int) throws {
+    func editGroupMember(_ order: [String], index: Int, update: @escaping (TerminalConsole, [String]) -> Void) throws {
         guard order.count > 1 else {
-            throw UserError(localized("默认代理组至少保留一个节点。", "The default proxy group needs at least one node."))
-        }
-        let update = { (console: TerminalConsole, next: [String]) in
-            console.backFromForm()
-            console.editDefaultGroup(local, order: next, replacing: true)
+            throw UserError(localized("代理组至少保留一个节点。", "Keep at least one member in the group."))
         }
         let moves = [(-1, localized("上移", "Move up")), (1, localized("下移", "Move down"))]
         var choices = moves.compactMap { offset, title -> FormChoice? in
@@ -1894,12 +2008,14 @@ private extension TerminalConsole {
             return FormChoice(title: title) { console in
                 var next = order
                 next.swapAt(index, destination)
+                console.backFromForm()
                 update(console, next)
             }
         }
         choices.append(FormChoice(title: localized("移出组", "Remove from group")) { console in
             var next = order
             next.remove(at: index)
+            console.backFromForm()
             update(console, next)
         })
         let prompt = localized("选择要对组内节点执行的操作。", "Choose how to update this member.")
@@ -1978,7 +2094,8 @@ private extension TerminalConsole {
     func changePresetOutbound(_ name: String) throws {
         guard let profile else { throw addNodesFirst }
         let group = try routingPreset(name, profile: profile)
-        let targets = outboundOptions(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil,
+        let targets = outboundOptions(nodeNames: profile.nodes.map(\.name), groupNames: profile.routing.groupNames,
+                                      hasUpstream: profile.upstream != nil,
                                       proxyOnly: group.builtIn)
         chooseOutbound(group.title, targets: targets, current: group.target) { console, target in
             console.dispatch(["presets", "route", group.name, target.rawValue])
@@ -1993,7 +2110,8 @@ private extension TerminalConsole {
                   !profile.routing.collections.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
                 throw UserError(localized("请输入一个未使用的预设名称。", "Enter an unused preset name."))
             }
-            let targets = outboundOptions(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil)
+            let targets = outboundOptions(nodeNames: profile.nodes.map(\.name), groupNames: profile.routing.groupNames,
+                                          hasUpstream: profile.upstream != nil)
             console.chooseOutbound(title, targets: targets) { console, target in
                 let prompt = localized("输入第一个域名或 IP/CIDR。留空按 Enter 可保存空预设。",
                                        "Enter the first domain or IP/CIDR. Press Enter on a blank line to save an empty preset.")
@@ -2076,7 +2194,7 @@ private extension TerminalConsole {
             FormChoice(title: localized("修改地址", "Change address")) { try $0.upstreamForm() },
             FormChoice(title: clear) { console in
                 console.confirmEdit(clear, prompt: upstream.addressLabel, action: FormChoice(title: clear) { console in
-                    console.dispatch(["setup", "upstream", "off"])
+                    console.dispatch(["rules", "upstream", "off"])
                 })
             }
         ]
@@ -2097,13 +2215,14 @@ private extension TerminalConsole {
         present(ConsoleForm(title: title, prompt: prompt, accept: { console, value in
             let url = value.trimmingCharacters(in: .whitespaces)
             _ = try Upstream(url: url)
-            let arguments = useForUnmatched ? ["rules", "default", "upstream", url] : ["setup", "upstream", url]
+            let arguments = useForUnmatched ? ["rules", "default", "upstream", url] : ["rules", "upstream", url]
             console.dispatch(arguments)
         }))
     }
 
     func setupForm(_ arguments: [String]) throws -> Bool {
-        guard arguments.first == "setup", arguments[safe: 1] != "upstream" else { return false }
+        guard arguments.starts(with: ["nodes", "import"]) ||
+            (arguments.first == "setup" && arguments[safe: 1] != "upstream") else { return false }
         let sourceIndex = arguments[safe: 1] == "import" ? 2 : 1
         if arguments.count == sourceIndex {
             present(ConsoleForm(title: localized("导入节点", "Import nodes"),

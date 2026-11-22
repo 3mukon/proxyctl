@@ -5,6 +5,7 @@ import Foundation
 enum RuleTarget: Hashable, RawRepresentable, Codable {
     case proxy, upstream, direct
     case node(String)
+    case group(String)
 
     static let standard: [RuleTarget] = [.proxy, .upstream, .direct]
 
@@ -14,10 +15,17 @@ enum RuleTarget: Hashable, RawRepresentable, Codable {
         case "upstream": self = .upstream
         case "direct": self = .direct
         default:
-            guard rawValue.prefix(5).lowercased() == "node:" else { return nil }
-            let name = String(rawValue.dropFirst(5))
-            guard Profile.validName(name) else { return nil }
-            self = .node(name)
+            if rawValue.prefix(5).lowercased() == "node:" {
+                let name = String(rawValue.dropFirst(5))
+                guard Profile.validName(name) else { return nil }
+                self = .node(name)
+            } else if rawValue.prefix(6).lowercased() == "group:" {
+                let name = String(rawValue.dropFirst(6))
+                guard ProxyGroup.validName(name) else { return nil }
+                self = .group(name)
+            } else {
+                return nil
+            }
         }
     }
 
@@ -27,6 +35,7 @@ enum RuleTarget: Hashable, RawRepresentable, Codable {
         case .upstream: return "upstream"
         case .direct: return "direct"
         case .node(let name): return "node:" + name
+        case .group(let name): return "group:" + name
         }
     }
 
@@ -35,16 +44,27 @@ enum RuleTarget: Hashable, RawRepresentable, Codable {
         return nil
     }
 
-    var usesManagedNode: Bool { self == .proxy || nodeName != nil }
+    var groupName: String? {
+        if case .group(let name) = self { return name }
+        return nil
+    }
+
+    var usesManagedProxy: Bool { self == .proxy || nodeName != nil || groupName != nil }
 
     // Rule-set identifiers and filenames stay independent of the node's display characters.
     var identifier: String {
-        guard let name = nodeName else { return rawValue }
+        guard let name = nodeName ?? groupName else { return rawValue }
         let digest = SHA256.hash(data: Data(name.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "node-" + digest
+        return (groupName == nil ? "node-" : "group-") + digest
     }
 
-    func resolved(in names: [String]) throws -> RuleTarget {
+    func resolved(in names: [String], groups: [String] = []) throws -> RuleTarget {
+        if let name = groupName {
+            guard let matched = Profile.matchingName(name, in: groups) else {
+                throw UserError(localized("请选择已有的代理组。", "Choose an existing proxy group."))
+            }
+            return .group(matched)
+        }
         guard let name = nodeName else { return self }
         guard let matched = Profile.matchingName(name, in: names) else {
             throw UserError(localized("请选一个已导入的节点。", "Choose a node from the imported inventory."))
@@ -58,6 +78,7 @@ enum RuleTarget: Hashable, RawRepresentable, Codable {
         case .upstream: return localized("外部代理", "External upstream")
         case .direct: return localized("直连", "Direct")
         case .node(let name): return localized("节点 · ", "Node · ") + terminalText(name)
+        case .group(let name): return localized("代理组 · ", "Group · ") + terminalText(name)
         }
     }
 
@@ -67,6 +88,7 @@ enum RuleTarget: Hashable, RawRepresentable, Codable {
         case .upstream: return upstreamTag
         case .direct: return directTag
         case .node(let name): return name
+        case .group(let name): return ProxyGroup.prefix + name
         }
     }
 
@@ -75,7 +97,7 @@ enum RuleTarget: Hashable, RawRepresentable, Codable {
         case .proxy: return proxyDNS
         case .upstream: return upstreamDNS
         case .direct: return directDNS
-        case .node: return "proxyctl-\(identifier)-dns"
+        case .node, .group: return "proxyctl-\(identifier)-dns"
         }
     }
 }
@@ -144,14 +166,14 @@ struct RuleChange {
     let rule: CustomRule
     let add: Bool
 
-    init(_ args: [String], hasUpstream: Bool, nodeNames: [String]) throws {
+    init(_ args: [String], hasUpstream: Bool, nodeNames: [String], groupNames: [String] = []) throws {
         guard args.count == 3, ["add", "remove"].contains(args[0]),
               let parsed = RuleTarget(rawValue: args[2]) else {
-            let example = commandExample("rules add|remove DOMAIN_OR_CIDR proxy|direct|upstream|node:NAME")
+            let example = commandExample("rules add|remove DOMAIN_OR_CIDR proxy|direct|upstream|node:NAME|group:NAME")
             throw UserError(localized("使用 \(example)", "Use \(example)"))
         }
         self.add = args[0] == "add"
-        let target = try parsed.resolved(in: nodeNames)
+        let target = try parsed.resolved(in: nodeNames, groups: groupNames)
         if add && target == .upstream && !hasUpstream {
             throw UserError(localized("请先配置外部出站。", "Configure an external upstream first."))
         }
@@ -162,10 +184,12 @@ struct RuleChange {
 struct RuleFiles {
     let directory: URL
     let nodeNames: [String]
+    let groupNames: [String]
 
-    init(state: URL, id: UUID, nodeNames: [String] = []) {
+    init(state: URL, id: UUID, nodeNames: [String] = [], groupNames: [String] = []) {
         directory = state.appendingPathComponent(Self.folder(id), isDirectory: true)
         self.nodeNames = nodeNames
+        self.groupNames = groupNames
     }
 
     static func folder(_ id: UUID) -> String { "rules-\(id.uuidString.lowercased())" }
@@ -174,18 +198,37 @@ struct RuleFiles {
         "proxyctl-rule-\(target.identifier)-\(match.rawValue)"
     }
 
-    static func targets(_ names: [String], hasUpstream: Bool) -> [RuleTarget] {
-        names.map(RuleTarget.node) + (hasUpstream ? RuleTarget.standard : [.proxy, .direct])
+    static func targets(_ names: [String], groupNames: [String] = [], hasUpstream: Bool) -> [RuleTarget] {
+        names.map(RuleTarget.node) + groupNames.map(RuleTarget.group) + (hasUpstream ? RuleTarget.standard : [.proxy, .direct])
     }
 
     private static func slots(_ targets: [RuleTarget]) -> [(RuleTarget, RuleMatch)] {
         RuleMatch.allCases.flatMap { match in targets.map { ($0, match) } }
     }
 
-    private var slots: [(RuleTarget, RuleMatch)] { Self.slots(Self.targets(nodeNames, hasUpstream: true)) }
+    private var slots: [(RuleTarget, RuleMatch)] { Self.slots(Self.targets(nodeNames, groupNames: groupNames, hasUpstream: true)) }
 
     func supports(_ target: RuleTarget) -> Bool {
-        target.nodeName.map(nodeNames.contains) ?? true
+        if let name = target.groupName { return groupNames.contains(name) }
+        return target.nodeName.map(nodeNames.contains) ?? true
+    }
+
+    func prepareGroupSlots(previous: RuleFiles) throws {
+        guard directory == previous.directory, nodeNames == previous.nodeNames else {
+            throw UserError("The system rule layout changed unexpectedly.")
+        }
+        guard try previous.list().allSatisfy({ supports($0.target) }) else {
+            throw UserError(localized("请先移除引用该代理组的系统单条规则。", "Remove system rules that use the proxy group first."))
+        }
+        for name in groupNames where !previous.groupNames.contains(name) {
+            for match in RuleMatch.allCases { try write([], target: .group(name), match: match) }
+        }
+    }
+
+    func removeGroupSlots(omittedFrom remaining: RuleFiles) {
+        for name in groupNames where !remaining.groupNames.contains(name) {
+            for match in RuleMatch.allCases { try? FileManager.default.removeItem(at: path(.group(name), match)) }
+        }
     }
 
     static func config(_ id: UUID, targets: [RuleTarget]) -> [[String: String]] {
@@ -195,7 +238,7 @@ struct RuleFiles {
         }
     }
 
-    static func layout(in route: [String: Any], nodeNames: [String]) throws -> (id: UUID, nodeNames: [String])? {
+    static func layout(in route: [String: Any], nodeNames: [String], groupNames: [String]) throws -> (id: UUID, nodeNames: [String], groupNames: [String])? {
         guard let sets = route["rule_set"] else { return nil }
         let invalid = UserError(localized("无法识别本机规则集。", "The local rule sets could not be identified."))
         guard let definitions = sets as? [[String: Any]] else { throw invalid }
@@ -206,8 +249,12 @@ struct RuleFiles {
               let directory = path.split(separator: "/").first, directory.hasPrefix("rules-"),
               let id = UUID(uuidString: String(directory.dropFirst(6))) else { throw invalid }
         for names in [nodeNames, []] {
-            if files == config(id, targets: targets(names, hasUpstream: false)) ||
-                files == config(id, targets: targets(names, hasUpstream: true)) { return (id, names) }
+            for groups in [groupNames, []] {
+                if files == config(id, targets: targets(names, groupNames: groups, hasUpstream: false)) ||
+                    files == config(id, targets: targets(names, groupNames: groups, hasUpstream: true)) {
+                    return (id, names, groups)
+                }
+            }
         }
         throw invalid
     }
@@ -224,7 +271,7 @@ struct RuleFiles {
     func create(_ rules: [CustomRule] = []) throws {
         let validated = try rules.map { item in
             guard supports(item.target) else {
-                throw UserError(localized("请先修改引用已移除节点的单条规则。", "Update single rules that reference removed nodes first."))
+                throw UserError(localized("请先修改引用已移除节点或代理组的单条规则。", "Update single rules that reference removed nodes or groups first."))
             }
             let rule = try CustomRule(item.value, target: item.target)
             guard rule == item else { throw UserError(localized("规则数据无效。", "Invalid rule data.")) }

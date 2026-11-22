@@ -73,7 +73,7 @@ struct RuleCollection: Codable, Equatable {
             guard let tag = set["tag"] as? String, tag.hasPrefix(prefix) else { continue }
             let parts = tag.dropFirst(prefix.count).split(separator: ":", maxSplits: 1).map(String.init)
             guard parts.count == 2, let target = identifiers[parts[0]], validName(parts[1]),
-                  Preset(rawValue: parts[1]) == nil || target.usesManagedNode,
+                  Preset(rawValue: parts[1]) == nil || target.usesManagedProxy,
                   set["type"] as? String == "inline", let entries = entries(in: set),
                   entries.count <= 2, entries.allSatisfy({ $0.count == 1 }),
                   entries.flatMap(\.keys).allSatisfy({ RuleMatch(rawValue: $0) != nil }),

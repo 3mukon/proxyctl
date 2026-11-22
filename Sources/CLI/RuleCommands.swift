@@ -1,7 +1,7 @@
 import Foundation
 
 private func ruleUsage() -> UserError {
-    let example = commandExample("rules add|remove DOMAIN_OR_CIDR proxy|direct|upstream|node:NAME")
+    let example = commandExample("rules add|remove DOMAIN_OR_CIDR proxy|direct|upstream|group:NAME|node:NAME")
     return UserError(localized("使用 \(example)", "Use \(example)"))
 }
 
@@ -81,7 +81,8 @@ private func applyLocalRules(_ args: [String], paths: Paths) throws {
         try showRules(args, profile: profile, paths: paths)
         return
     }
-    let change = try RuleChange(args, hasUpstream: profile.upstream != nil, nodeNames: profile.nodes.map(\.name))
+    let change = try RuleChange(args, hasUpstream: profile.upstream != nil, nodeNames: profile.nodes.map(\.name),
+                                groupNames: profile.routing.groupNames)
     if let files = profile.routing.ruleFiles(in: paths.state), files.supports(change.rule.target) {
         try files.update(change)
     } else if change.add {
@@ -103,11 +104,12 @@ private func manageDefault(_ args: [String], paths: Paths) throws {
     if args.isEmpty {
         print(catchAllLine(profile.routing.fallback))
         if tty {
-            if let target = try chooseTarget(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil) {
+            if let target = try chooseTarget(nodeNames: profile.nodes.map(\.name), groupNames: profile.routing.groupNames,
+                                             hasUpstream: profile.upstream != nil) {
                 try manageDefault([target.rawValue], paths: paths)
             }
         } else {
-            let targets = profile.upstream == nil ? "direct|proxy|node:NAME" : "direct|proxy|upstream|node:NAME"
+            let targets = (profile.upstream == nil ? "direct|proxy" : "direct|proxy|upstream") + "|group:NAME|node:NAME"
             print(commandExample("rules default \(targets)"))
         }
         return
@@ -116,16 +118,16 @@ private func manageDefault(_ args: [String], paths: Paths) throws {
         throw UserError(localized("请选择其余流量的出站。", "Choose an outbound for the remaining traffic."))
     }
     let updated = try editLocalPolicy(paths) { routing, profile in
-        routing.fallback = try target.resolved(in: profile.nodes.map(\.name))
+        routing.fallback = try target.resolved(in: profile.nodes.map(\.name), groups: routing.groupNames)
         routing.explicitDefault = true
     }
     print(catchAllLine(updated.fallback))
 }
 
-func promptForRule(nodeNames: [String], hasUpstream: Bool) throws -> [String]? {
+func promptForRule(nodeNames: [String], groupNames: [String] = [], hasUpstream: Bool) throws -> [String]? {
     print(localized("输入域名或 IP/CIDR。直接回车返回。", "Enter a domain or IP/CIDR. Press Enter to go back."))
     guard let match = readLine(), !match.isEmpty,
-          let target = try chooseTarget(nodeNames: nodeNames, hasUpstream: hasUpstream) else { return nil }
+          let target = try chooseTarget(nodeNames: nodeNames, groupNames: groupNames, hasUpstream: hasUpstream) else { return nil }
     return ["add", match, target.rawValue]
 }
 
@@ -136,12 +138,13 @@ func rules(_ args: [String], _ paths: Paths) throws {
         try manageDefault(Array(args.dropFirst()), paths: paths)
     } else if args == ["add"], tty {
         let profile = try ManagedProfile(paths.config)
-        if let change = try promptForRule(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil) {
+        if let change = try promptForRule(nodeNames: profile.nodes.map(\.name), groupNames: profile.routing.groupNames,
+                                          hasUpstream: profile.upstream != nil) {
             try rules(change, paths)
         }
     } else {
         if !FileManager.default.fileExists(atPath: paths.config.path) {
-            throw UserError(localized("请先运行 \(commandExample("setup")) 导入节点。", "Import nodes with \(commandExample("setup"))."))
+            throw UserError(localized("请先运行 \(commandExample("nodes import")) 导入节点。", "Import nodes with \(commandExample("nodes import"))."))
         }
         try paths.locked { try applyLocalRules(args, paths: paths) }
     }

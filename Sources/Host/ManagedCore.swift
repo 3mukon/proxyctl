@@ -25,16 +25,25 @@ extension Engine {
         try savePrivate(JSONEncoder().encode(state), to: preferenceFile)
     }
 
-    func automaticallySelect() throws {
+    func automaticallySelect() {
         let preference = selectionPreference()
-        guard preference.automatic, profile.order.count > 1 else { return }
-        let current = try self.current()
-        guard let candidate = profile.order.first(where: { (try? measure($0, url: preference.url)) != nil }),
-              current != candidate else { return }
-        try paths.locked {
-            // A manual selection or another runtime may have changed the policy during probing.
-            guard selectionPreference() == preference, try self.current() == current else { return }
-            try select(candidate)
+        let groups = (preference.automatic ? [.proxy] : []) + profile.routing.groups.map(\.target)
+        var health: [String: Bool] = [:]
+        for group in groups {
+            let order = profile.order(for: group)
+            guard order.count > 1, let current = try? self.current(in: group) else { continue }
+            let candidate = order.first { name in
+                if let cached = health[name] { return cached }
+                let reachable = (try? measure(name, url: preference.url)) != nil
+                health[name] = reachable
+                return reachable
+            }
+            guard let candidate, current != candidate else { continue }
+            try? paths.locked {
+                guard group != .proxy || selectionPreference() == preference,
+                      try self.current(in: group) == current else { return }
+                try select(candidate, in: group)
+            }
         }
     }
 }
@@ -64,7 +73,7 @@ struct ManagedCore {
         let monitor = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "proxyctl.failover"))
         monitor.schedule(deadline: .now() + .seconds(2), repeating: .seconds(8))
         monitor.setEventHandler {
-            if process.isRunning { try? engine.automaticallySelect() }
+            if process.isRunning { engine.automaticallySelect() }
         }
         monitor.resume()
         process.waitUntilExit()

@@ -50,7 +50,7 @@ enum TunnelCheck {
         let pids = Set(addresses.filter(loopback).flatMap { listenerPIDs(host: $0, port: port) })
         let owners = pids.compactMap(packetTunnelOwner)
         guard owners.count == pids.count, let owner = owners.sorted().first else { return }
-        let setup = commandExample("setup upstream")
+        let setup = commandExample("rules upstream")
         let rules = commandExample("rules")
         throw UserError(localized(
             "外部代理 \(upstream.addressLabel) 由 \(owner) 的 VPN 隧道提供。用 \(setup) 更换为独立代理，或在 \(rules) 中改选出口。",
@@ -107,7 +107,7 @@ enum TunnelCheck {
         }
     }
 
-    static func dataPath(_ engine: Engine, deadline: TimeInterval? = nil) throws {
+    static func dataPath(_ engine: Engine, deadline: TimeInterval? = nil, changedTargets: Set<RuleTarget>? = nil) throws {
         try checkDeadline(deadline)
         guard routed else { throw UserError("IPv4 或 IPv6 公网路由未经过 TUN。") }
         let routing = engine.profile.routing
@@ -136,15 +136,29 @@ enum TunnelCheck {
         }
         try checkDeadline(deadline)
         let checked = try engine.checkActive(url: probeURL)
-        for name in routing.pinnedNodes(rules).sorted() where name != checked.node {
+        let checkedTargets = changedTargets ?? routing.activeTargets(rules)
+        var measured: Set<String> = [checked.node]
+        for name in checkedTargets.compactMap(\.nodeName).sorted() where name != checked.node {
             try checkDeadline(deadline)
+            measured.insert(name)
             do { _ = try engine.measure(name, url: probeURL) }
             catch {
                 throw UserError(localized("指定节点 \(terminalText(name)) 未通过连通性检查。",
                                           "The specified node \(terminalText(name)) failed its connectivity check."))
             }
         }
-        if engine.profile.upstream != nil, routing.referencesUpstream(with: rules) {
+        for group in routing.groups where checkedTargets.contains(group.target) {
+            try checkDeadline(deadline)
+            let name = try engine.current(in: group.target)
+            if measured.insert(name).inserted {
+                do { _ = try engine.measure(name, url: probeURL) }
+                catch {
+                    throw UserError(localized("代理组「\(group.name)」当前节点未通过探测。",
+                                              "The current node in proxy group \(group.name) failed its connectivity check."))
+                }
+            }
+        }
+        if engine.profile.upstream != nil, checkedTargets.contains(.upstream) {
             try checkDeadline(deadline)
             _ = try engine.measure(upstreamTag, url: probeURL)
         }

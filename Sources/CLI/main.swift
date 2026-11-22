@@ -35,16 +35,18 @@ func help() {
           proxyctl status [--json]         Show system TUN, node, and firewall status
           proxyctl nodes [--json]          List nodes and priority
           proxyctl nodes add               Add a copied share link
-          proxyctl nodes group [NODE...]   Edit the local default proxy group
-          proxyctl setup [FILE]            Import sing-box nodes
-          proxyctl setup upstream URL|off  Save or clear the external proxy address
+          proxyctl nodes import FILE       Import sing-box nodes
+          proxyctl groups [--json]         List proxy groups and their failover order
+          proxyctl groups default NODE... Set the default group's order
+          proxyctl groups set NAME NODE... Create or edit a named group
+          proxyctl groups remove NAME      Remove a named group
           proxyctl rules [--json]          List custom rules and, in text output, where unmatched traffic goes
           proxyctl rules default TARGET    Set the outbound for unmatched traffic
-          proxyctl presets                 Show Claude and OpenAI presets
+          proxyctl rules upstream URL|off  Save or clear the external proxy address
+          proxyctl presets                 Show routing presets
           proxyctl check                   Check system routing or probe the first configured node
           proxyctl check node NODE         Check one imported node in isolation
           proxyctl test [NODE]             Run an isolated node probe
-          proxyctl use NODE | --auto       Select a node or enable failover for the default group
           proxyctl system                  Manage the system tunnel and rollback
           proxyctl start | stop            Verify and start, or stop the system proxy
           proxyctl enable | disable        Set whether the system proxy starts at boot
@@ -63,17 +65,18 @@ func help() {
       proxyctl status [--json]         查看全机 TUN、节点和防火墙状态
       proxyctl nodes [--json]          列出节点和策略组顺序
       proxyctl nodes add               从剪贴板添加节点
-      proxyctl nodes group [NODE...]   编辑本机默认代理组
-      proxyctl setup                    查看本机入门步骤
-      proxyctl setup FILE              从 sing-box JSON 选择节点
-      proxyctl setup upstream URL|off  保存或清除外部代理地址
+      proxyctl nodes import FILE       从 sing-box JSON 导入节点
+      proxyctl groups [--json]         查看代理组和主备顺位
+      proxyctl groups default NODE... 设置默认代理组顺位
+      proxyctl groups set NAME NODE... 创建或编辑自定义代理组
+      proxyctl groups remove NAME      删除自定义代理组
       proxyctl rules [--json]          查看自定义规则，文字输出也显示其余流量的出口
       proxyctl rules default TARGET    设置其余流量的出口
-      proxyctl presets                 查看 Claude 和 OpenAI 分流预设
+      proxyctl rules upstream URL|off  保存或清除外部代理地址
+      proxyctl presets                 查看分流预设
       proxyctl check                   验证全机路径，启用前隔离检测首选节点
       proxyctl check node NODE         隔离检测一个已导入节点
       proxyctl test [NODE]             在隔离环境中检测节点
-      proxyctl use NODE | --auto       为默认代理组选节点或启用自动主备
       proxyctl system                  查看系统隧道、验证和回退命令
       proxyctl start | stop            验证并启动系统代理，或停止系统代理
       proxyctl enable | disable        设置开机自启
@@ -81,7 +84,7 @@ func help() {
       proxyctl doctor                  查看内核和本地配置
       proxyctl logs                    查看近期内核日志
 
-    setup 可用 --group NAME，或重复 --node NODE。--preset 可选 claude 或 openai。
+    nodes import 可用 --group NAME，或重复 --node NODE。--preset 可选 claude 或 openai。
     在控制台输入 /help 可查看交互命令和按键。
     --port 默认 11082，--control-port 默认 19082。
     """)
@@ -217,12 +220,12 @@ func setup(_ args: [String], _ paths: Paths) throws {
     if arguments.isEmpty && !tty {
         print(localized(
             """
-            导入节点：proxyctl nodes add 或 proxyctl setup FILE
+            导入节点：proxyctl nodes add 或 proxyctl nodes import FILE
             隔离检测：proxyctl check
             全机接管：proxyctl system 查看准备、试用和回退步骤
             """,
             """
-            Import nodes with proxyctl nodes add or proxyctl setup FILE.
+            Import nodes with proxyctl nodes add or proxyctl nodes import FILE.
             Run an isolated node check with proxyctl check.
             For system capture, see proxyctl system for preparation, trial, and recovery.
             """))
@@ -273,8 +276,8 @@ func setup(_ args: [String], _ paths: Paths) throws {
         let upstream = try external.map(profile.explicitUpstream) ?? previous?.upstream
         var routing = previous?.routing ?? Routing(presets: Preset.allCases)
         if let fallback {
-            routing.fallback = try fallback.resolved(in: profile.nodes.map(\.name))
-            routing.explicitDefault = fallback == .upstream || fallback.nodeName != nil
+            routing.fallback = try fallback.resolved(in: profile.nodes.map(\.name), groups: routing.groupNames)
+            routing.explicitDefault = fallback == .upstream || fallback.nodeName != nil || fallback.groupName != nil
         } else if !routing.explicitDefault {
             routing.fallback = .direct
         }
@@ -310,7 +313,7 @@ private func editNodeGroup(_ names: [String], paths: Paths) throws {
             return
         }
         let chosen = try awaitOrder(Profile(config), currentOrder: current.order)
-        order = try saveDefaultGroup(chosen, paths: paths, expected: current)
+        order = try saveDefaultGroup(chosen, paths: paths, expectedRevision: current.defaultOrderRevision())
     } else {
         order = try saveDefaultGroup(names, paths: paths)
     }
@@ -318,6 +321,10 @@ private func editNodeGroup(_ names: [String], paths: Paths) throws {
 }
 
 func nodes(_ args: [String], _ paths: Paths) throws {
+    if args.first == "import" {
+        try setup(args, paths)
+        return
+    }
     if args.first == "add" {
         try addNodeLinks(Array(args.dropFirst()), paths)
         return
@@ -343,8 +350,8 @@ func nodes(_ args: [String], _ paths: Paths) throws {
         try showInventory(Inventory(source: "managed", nodes: engine.profile.nodes), order: engine.profile.order,
                           selected: try? engine.current(), json: json)
         if !json {
-            print(commandExample("nodes group") + " · " + localized("编辑默认代理组", "Edit the default proxy group"))
             print(commandExample("nodes add") + " · " + localized("从剪贴板添加节点", "Add from clipboard"))
+            print(commandExample("nodes import") + " · " + localized("从 JSON 文件导入节点", "Import nodes from JSON"))
         }
     } else {
         if json { try showInventory(Inventory(source: "managed", nodes: []), json: true); return }
@@ -379,7 +386,7 @@ func useOrTest(_ command: String, _ arguments: [String], _ paths: Paths) throws 
     }
     if command == "use" {
         guard (try? engine.requireListener()) != nil else {
-            let editor = commandExample("nodes group")
+            let editor = commandExample("groups edit")
             throw UserError(localized("切换当前节点需要运行中的 Proxyctl 内核。用 \(editor) 编辑组成员和顺位。",
                                       "Switching nodes requires the Proxyctl engine to be running. Use \(editor) to edit group membership and priority."))
         }
@@ -468,13 +475,14 @@ func execute(_ args: [String], _ paths: Paths) throws {
             print(localized("本机配置通过 sing-box 校验。", "sing-box validated the local profile."))
         } else { print("接下来运行 proxyctl setup") }
     case "nodes": try nodes(rest, paths)
+    case "groups": try manageGroups(rest, paths)
     case "setup": try setup(rest, paths)
     case "presets": try managePresets(rest, paths)
     case "rules": try rules(rest, paths)
     case "preview":
         guard rest.isEmpty else { throw UserError(localized("使用 ", "Use ") + commandExample("preview")) }
         guard FileManager.default.fileExists(atPath: paths.config.path) else {
-            throw UserError(localized("运行 \(commandExample("setup")) 导入节点。", "Import nodes with \(commandExample("setup"))."))
+            throw UserError(localized("运行 \(commandExample("nodes import")) 导入节点。", "Import nodes with \(commandExample("nodes import"))."))
         }
         let core = try paths.locked {
             let profile = try upgradeLoopbackProfile(paths)

@@ -23,10 +23,13 @@ enum Preset: String, CaseIterable, Codable {
 struct Routing: Equatable {
     var collections: [RuleCollection]
     var fallback: RuleTarget
+    var groups: [ProxyGroup] = []
     var rulesID: UUID?
     var ruleNodes: [String] = []
+    var ruleGroups: [String] = []
     var explicitDefault = false
 
+    var groupNames: [String] { groups.map(\.name) }
     var presets: [Preset] { collections.filter(\.enabled).compactMap { Preset(rawValue: $0.name) } }
     var referencesUpstream: Bool {
         fallback == .upstream || collections.contains { $0.enabled && $0.target == .upstream }
@@ -43,16 +46,18 @@ struct Routing: Equatable {
 
     init(_ raw: [String: Any], nodeNames: [String]) throws {
         let route = raw["route"] as? [String: Any] ?? [:]
-        let targets = RuleFiles.targets(nodeNames, hasUpstream: true)
+        groups = try ProxyGroup.decode(raw["outbounds"] as? [[String: Any]] ?? [], nodeNames: nodeNames)
+        let targets = RuleFiles.targets(nodeNames, groupNames: groups.map(\.name), hasUpstream: true)
         guard let fallback = targets.first(where: { $0.outbound == (route["final"] as? String) }) else {
             throw UserError(localized("无法识别当前配置的默认出站。", "The default outbound could not be recognized."))
         }
         let rules = route["rules"] as? [[String: Any]] ?? []
         let sets = route["rule_set"] as? [[String: Any]] ?? []
-        let layout = try RuleFiles.layout(in: route, nodeNames: nodeNames)
+        let layout = try RuleFiles.layout(in: route, nodeNames: nodeNames, groupNames: groups.map(\.name))
         self.fallback = fallback
         self.rulesID = layout?.id
         self.ruleNodes = layout?.nodeNames ?? []
+        self.ruleGroups = layout?.groupNames ?? []
         self.explicitDefault = sets.contains { $0["tag"] as? String == RuleCollection.fallbackMarker }
         let parsed = try RuleCollection.decode(sets, routes: rules, targets: targets)
         if parsed.isEmpty {
@@ -66,24 +71,47 @@ struct Routing: Equatable {
     }
 
     func ruleFiles(in state: URL) -> RuleFiles? {
-        rulesID.map { RuleFiles(state: state, id: $0, nodeNames: ruleNodes) }
+        rulesID.map { RuleFiles(state: state, id: $0, nodeNames: ruleNodes, groupNames: ruleGroups) }
+    }
+
+    func activeTargets(_ rules: [CustomRule]) -> Set<RuleTarget> {
+        Set([fallback] + collections.filter(\.enabled).map(\.target) + rules.map(\.target))
     }
 
     func pinnedNodes(_ rules: [CustomRule]) -> Set<String> {
-        Set(([fallback] + collections.filter(\.enabled).map(\.target) + rules.map(\.target)).compactMap(\.nodeName))
+        Set(activeTargets(rules).compactMap(\.nodeName))
+    }
+
+    func expandedTargets(since previous: Routing) -> Set<RuleTarget> {
+        var targets: Set<RuleTarget> = []
+        if fallback != previous.fallback { targets.insert(fallback) }
+        for collection in collections where collection.enabled {
+            let retained = previous.collections.first { $0.name == collection.name && $0.enabled && $0.target == collection.target }
+            if let retained, Set(collection.domains).isSubset(of: retained.domains),
+               Set(collection.networks).isSubset(of: retained.networks) {
+                continue
+            }
+            targets.insert(collection.target)
+        }
+        return targets
     }
 
     func apply(to config: inout [String: Any], system: Bool = false) throws {
-        let nodes = try Profile(config).nodes.map(\.name)
-        let available = Set(nodes)
-        let pinned = ([fallback] + collections.map(\.target)).compactMap(\.nodeName)
-        guard pinned.allSatisfy(available.contains) else {
-            throw UserError(localized("请先修改引用已移除节点的预设或「其余全部」。",
-                                      "Update presets or the catch-all that reference removed nodes first."))
+        let profile = try Profile(config)
+        let nodes = profile.nodes.map(\.name)
+        try ProxyGroup.validate(groups, nodeNames: nodes)
+        let available = RuleFiles.targets(nodes, groupNames: groupNames, hasUpstream: true)
+        let referenced = [fallback] + collections.map(\.target)
+        guard referenced.allSatisfy(available.contains) else {
+            throw UserError(localized("请先修改引用该节点或代理组的预设或「其余全部」。",
+                                      "Update presets or the catch-all that use the node or group first."))
         }
-        let outbounds = config["outbounds"] as? [[String: Any]] ?? []
+        let outbounds = profile.outbounds.filter { !ProxyGroup.isSelector($0) } + groups.map {
+            ProxyGroup.selector(tag: $0.target.outbound, order: $0.order)
+        }
+        config["outbounds"] = outbounds
         let hasUpstream = outbounds.contains { $0["tag"] as? String == upstreamTag }
-        let targets = RuleFiles.targets(ruleNodes, hasUpstream: hasUpstream)
+        let targets = RuleFiles.targets(ruleNodes, groupNames: ruleGroups, hasUpstream: hasUpstream)
         let activeTargets = rulesID == nil ? [] : targets
 
         var rules: [[String: Any]] = []
@@ -125,9 +153,8 @@ struct Routing: Equatable {
             servers.append(["type": "https", "tag": upstreamDNS, "server": "1.1.1.1", "detour": upstreamTag,
                             "tls": ["server_name": "cloudflare-dns.com"]])
         }
-        let needed = Set(pinned + ruleNodes)
-        for name in nodes where needed.contains(name) {
-            let target = RuleTarget.node(name)
+        let needed = Set(referenced + activeTargets)
+        for target in available where (target.nodeName != nil || target.groupName != nil) && needed.contains(target) {
             servers.append(["type": "https", "tag": target.resolver, "server": "1.1.1.1", "detour": target.outbound,
                             "tls": ["server_name": "cloudflare-dns.com"]])
         }

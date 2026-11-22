@@ -1,12 +1,12 @@
 import Foundation
 
-func outboundOptions(nodeNames: [String], hasUpstream: Bool, proxyOnly: Bool = false) -> [RuleTarget] {
+func outboundOptions(nodeNames: [String], groupNames: [String] = [], hasUpstream: Bool, proxyOnly: Bool = false) -> [RuleTarget] {
     let common: [RuleTarget] = proxyOnly ? [.proxy] : (hasUpstream ? [.direct, .proxy, .upstream] : [.direct, .proxy])
-    return common + nodeNames.map(RuleTarget.node)
+    return common + groupNames.map(RuleTarget.group) + nodeNames.map(RuleTarget.node)
 }
 
-func chooseTarget(nodeNames: [String], hasUpstream: Bool, proxyOnly: Bool = false) throws -> RuleTarget? {
-    let available = outboundOptions(nodeNames: nodeNames, hasUpstream: hasUpstream, proxyOnly: proxyOnly)
+func chooseTarget(nodeNames: [String], groupNames: [String] = [], hasUpstream: Bool, proxyOnly: Bool = false) throws -> RuleTarget? {
+    let available = outboundOptions(nodeNames: nodeNames, groupNames: groupNames, hasUpstream: hasUpstream, proxyOnly: proxyOnly)
     for (index, target) in available.enumerated() {
         print("  \(index + 1). \(target.displayName)")
     }
@@ -28,21 +28,11 @@ func editLocalPolicy(_ paths: Paths, change: (inout Routing, ManagedProfile) thr
         let profile = try ManagedProfile(config)
         var edited = profile.routing
         try change(&edited, profile)
-        if edited != profile.routing { try writeRoutingProfile(config, routing: edited, paths: paths) }
-        if let system = protectedConsoleStatus(paths, ProtectedService.installedStatus()),
-           system.routingRevision != (try edited.systemPolicy.revision()) {
-            if usesLivePolicy(system) {
-                do {
-                    try applyRoutingPolicy(ManagedProfile(paths.config))
-                } catch {
-                    let apply = commandExample("system apply")
-                    print(localized("已保存在本机，系统应用未完成。用 \(apply) 重试。",
-                                    "Saved locally. Use \(apply) to retry applying the changes."))
-                    throw error
-                }
-            } else {
-                print(pendingPolicyMessage(system))
-            }
+        if edited != profile.routing {
+            try writeRoutingProfile(config, routing: edited, paths: paths)
+            try syncRoutingPolicy(ManagedProfile(paths.config), paths: paths)
+        } else {
+            try syncRoutingPolicy(profile, paths: paths)
         }
         return edited
     }
@@ -72,7 +62,8 @@ func managePresets(_ args: [String], _ paths: Paths) throws {
             throw UserError(localized("未找到该预设。", "Preset not found."))
         }
         let group = collections[index]
-        if let target = try chooseTarget(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil,
+        if let target = try chooseTarget(nodeNames: profile.nodes.map(\.name), groupNames: profile.routing.groupNames,
+                                         hasUpstream: profile.upstream != nil,
                                          proxyOnly: group.builtIn) {
             try managePresets(["route", group.name, target.rawValue], paths)
         }
@@ -85,7 +76,7 @@ func managePresets(_ args: [String], _ paths: Paths) throws {
                   !routing.collections.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
                 throw UserError(localized("请为新预设选择唯一名称和出站。", "Choose a unique name and outbound for the new preset."))
             }
-            let resolved = try target.resolved(in: profile.nodes.map(\.name))
+            let resolved = try target.resolved(in: profile.nodes.map(\.name), groups: routing.groupNames)
             var group = RuleCollection(name: name, target: resolved, enabled: true, domains: [], networks: [])
             if args.count == 4 { try group.edit(args[3], add: true) }
             routing.collections.append(group)
@@ -103,11 +94,11 @@ func managePresets(_ args: [String], _ paths: Paths) throws {
             guard let target = RuleTarget(rawValue: args[2]) else {
                 throw UserError(localized("请选择已配置的出口。", "Choose a configured outbound."))
             }
-            if routing.collections[index].builtIn && !target.usesManagedNode {
-                throw UserError(localized("内置预设可以选择默认代理组或指定节点。",
-                                          "Built-in presets can use the default proxy group or a specified node."))
+            if routing.collections[index].builtIn && !target.usesManagedProxy {
+                throw UserError(localized("此预设需要选择一个代理组或节点。",
+                                          "This preset needs a proxy group or node."))
             }
-            routing.collections[index].target = try target.resolved(in: profile.nodes.map(\.name))
+            routing.collections[index].target = try target.resolved(in: profile.nodes.map(\.name), groups: routing.groupNames)
         case ("delete", 2):
             guard !routing.collections[index].builtIn else {
                 throw UserError(localized("内置预设可停用或编辑。", "Built-in presets support disabling and member edits."))
@@ -143,7 +134,8 @@ private func presetWizard(_ groups: [RuleCollection], paths: Paths) throws {
     if number == 0 {
         print(localized("输入预设名称。", "Enter a preset name."))
         guard let name = readLine(), !name.isEmpty,
-              let target = try chooseTarget(nodeNames: profile.nodes.map(\.name), hasUpstream: profile.upstream != nil) else { return }
+              let target = try chooseTarget(nodeNames: profile.nodes.map(\.name), groupNames: profile.routing.groupNames,
+                                            hasUpstream: profile.upstream != nil) else { return }
         print(localized("输入第一个域名或 IP/CIDR。回车可保存空集合。", "Enter the first domain or IP/CIDR, or save an empty preset with Enter."))
         guard let first = readLine() else { return }
         let member = first.isEmpty ? [] : [first]

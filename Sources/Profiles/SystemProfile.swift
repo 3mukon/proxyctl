@@ -21,6 +21,7 @@ struct SystemProfile {
         if let rulesID {
             routing.rulesID = rulesID
             routing.ruleNodes = managed.nodes.map(\.name)
+            routing.ruleGroups = managed.routing.groupNames
         }
         if let first, !managed.order.contains(first) { throw UserError("试用节点不在所选策略组内。") }
         var candidate = try source.managed(order: managed.order, port: managed.port,

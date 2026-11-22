@@ -3,6 +3,12 @@ import Foundation
 
 let probeURL = "https://www.gstatic.com/generate_204"
 
+struct ProxyGroupStatus: Codable, Equatable {
+    let name: String
+    let order: [String]
+    let selectedNode: String?
+}
+
 struct Engine {
     let paths: Paths
     let profile: ManagedProfile
@@ -36,12 +42,40 @@ struct Engine {
         return result.output
     }
 
-    func current() throws -> String {
-        let result = try loadObject(request("/proxies/\(selectorTag)"))
-        guard let current = result["now"] as? String, profile.order.contains(current), result["all"] as? [String] == profile.order else {
+    private func proxyPath(_ name: String) throws -> String {
+        let pathChars = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+        guard let tag = name.addingPercentEncoding(withAllowedCharacters: pathChars) else { throw ProxyGroup.invalid }
+        return "/proxies/" + tag
+    }
+
+    func current(in group: RuleTarget = .proxy) throws -> String {
+        let order = profile.order(for: group)
+        let result = try loadObject(request(proxyPath(group.outbound)))
+        guard let current = result["now"] as? String, order.contains(current), result["all"] as? [String] == order else {
             throw UserError(localized("运行中策略组与本机配置不一致。", "The running selector does not match the local profile."))
         }
         return current
+    }
+
+    func groupStatus(running: Bool) -> [ProxyGroupStatus] {
+        profile.routing.groups.map { group in
+            ProxyGroupStatus(name: group.name, order: group.order, selectedNode: running ? try? current(in: group.target) : nil)
+        }
+    }
+
+    func healthyMembers(for groups: [ProxyGroup], defaultOrder: [String]? = nil) throws -> [(RuleTarget, String)] {
+        var health: [String: Bool] = [:]
+        let options = (defaultOrder.map { [(RuleTarget.proxy, $0)] } ?? []) + groups.map { ($0.target, $0.order) }
+        return try options.map { target, order in
+            let group = ProxyGroup(name: target.groupName ?? target.displayName, order: order)
+            let member = try group.firstReachable { name in
+                if let cached = health[name] { return cached }
+                let reachable = (try? measure(name, url: probeURL)) != nil
+                health[name] = reachable
+                return reachable
+            }
+            return (target, member)
+        }
     }
 
     func checkActive(url: String) throws -> (node: String, delay: Int) {
@@ -69,24 +103,20 @@ struct Engine {
         if url != probeURL {
             return try test(name, url: url)
         }
-        let pathChars = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
-        guard let tag = name.addingPercentEncoding(withAllowedCharacters: pathChars) else {
-            throw UserError(localized("节点名称无效。", "Invalid node name."))
-        }
         var query = URLComponents()
         query.queryItems = [.init(name: "url", value: url), .init(name: "timeout", value: "5000")]
-        let result = try loadObject(request("/proxies/\(tag)/delay?\(query.percentEncodedQuery ?? "")"))
+        let result = try loadObject(request(proxyPath(name) + "/delay?" + (query.percentEncodedQuery ?? "")))
         guard let delay = result["delay"] as? Int, delay > 0 else { throw UserError(localized("节点未通过连通性探测。", "The node failed its connectivity check.")) }
         return delay
     }
 
-    func select(_ name: String) throws {
-        guard profile.order.contains(name) else {
+    func select(_ name: String, in group: RuleTarget = .proxy) throws {
+        guard profile.order(for: group).contains(name) else {
             throw UserError(localized("此节点未加入当前策略。", "This node is outside the active policy."))
         }
-        if try current() == name { return }
-        _ = try request("/proxies/\(selectorTag)", method: "PUT", body: try jsonData(["name": name]))
-        guard try current() == name else { throw UserError(localized("内核没有确认选中的节点。", "The core did not confirm the selected node.")) }
+        if try current(in: group) == name { return }
+        _ = try request(proxyPath(group.outbound), method: "PUT", body: try jsonData(["name": name]))
+        guard try current(in: group) == name else { throw UserError(localized("内核没有确认选中的节点。", "The core did not confirm the selected node.")) }
     }
 }
 

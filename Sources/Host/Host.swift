@@ -189,6 +189,6 @@ func printRules(_ rules: [CustomRule], json: Bool, hasUpstream: Bool, fallback: 
     for rule in rules { print("\(rule.value)  →  \(rule.target.displayName)") }
     print(catchAllLine(fallback))
     print(commandExample("rules default"))
-    print(commandExample("rules add|remove DOMAIN_OR_CIDR proxy|direct|upstream|node:NAME"))
+    print(commandExample("rules add|remove DOMAIN_OR_CIDR proxy|direct|upstream|group:NAME|node:NAME"))
     if hasUpstream { print(localized("外部出站已配置。", "An external upstream is configured.")) }
 }

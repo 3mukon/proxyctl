@@ -29,7 +29,9 @@ struct RoutingUpdateTests {
         try paths.coreCheck(paths.config)
 
         var desired = try ManagedProfile(preview).routing
-        desired.collections[0].target = .node(second)
+        let group = ProxyGroup(name: "Work exit", order: [second, first])
+        desired.groups = [group]
+        desired.collections[0].target = group.target
         desired.collections[1].enabled = false
         desired.collections += [RuleCollection(name: "Local web", target: .direct, enabled: true,
                                               domains: ["local.test"], networks: ["127.0.0.1/32"])]
@@ -41,10 +43,29 @@ struct RoutingUpdateTests {
         let resulting = try ManagedProfile(candidate, system: true)
         precondition(resulting.routing.policy == desired.policy)
         precondition(resulting.routing.rulesID == id && resulting.order == [first])
+        let withDefaultOrder = try RoutingUpdate(ManagedProfile(edited), includeDefaultOrder: true).candidate(from: installed)
+        let reordered = try ManagedProfile(withDefaultOrder, system: true)
+        precondition(reordered.order == [second, first])
         let beforeSecret = try ManagedProfile(installed, system: true).secret
         precondition(resulting.secret == beforeSecret)
+        let expanded = resulting.routing.expandedTargets(since: try ManagedProfile(installed, system: true).routing)
+        precondition(expanded == [.node(second), group.target, .direct])
+        var narrowed = resulting.routing
+        narrowed.collections[0].domains.removeLast()
+        precondition(narrowed.expandedTargets(since: resulting.routing).isEmpty)
         let retained = try files.list()
         precondition(retained == rules)
+        let nextFiles = resulting.routing.ruleFiles(in: directory)!
+        try nextFiles.prepareGroupSlots(previous: files)
+        let groupedRule = try RuleChange(["add", "group.test", group.target.rawValue],
+                                         hasUpstream: false, nodeNames: files.nodeNames, groupNames: nextFiles.groupNames)
+        try nextFiles.update(groupedRule)
+        do {
+            try files.prepareGroupSlots(previous: nextFiles)
+            preconditionFailure("Expected deletion of a group in use to be rejected")
+        } catch is UserError {}
+        let activeRules = try nextFiles.list()
+        precondition(Set(activeRules) == Set(rules + [groupedRule.rule]))
         let candidateData = try jsonData(candidate)
         try verifyRollback(RoutingRollback(config: paths.config), config: paths.config,
                            original: installedData, candidate: candidateData)

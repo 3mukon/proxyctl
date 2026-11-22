@@ -12,7 +12,7 @@ tags: []
 
 ## Responsibilities
 
-Run the bundled engine and call its control API. Apply the configured candidate order during background health checks and honor the operator's manual selection. Manage loopback service registration, timed TUN and PF trials, and offline rollback through independent launchd jobs.
+Run the bundled engine and call its control API. Select the first healthy member independently in each group during background health checks. Existing scripts can still pin a member of the default group. Manage loopback service registration, timed TUN and PF trials, and offline rollback through independent launchd jobs.
 
 ## Non-responsibilities
 

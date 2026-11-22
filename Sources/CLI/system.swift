@@ -10,6 +10,7 @@ struct SystemPlan: Encodable {
     let presets: [Preset]
     let collections: [RuleCollection]
     let order: [String]
+    let groups: [ProxyGroup]
     let rules: [CustomRule]
     let upstream: Bool
     let rollbackSeconds = Int(ProtectedService.interval)
@@ -37,6 +38,9 @@ func usesLivePolicy(_ status: ProtectionStatus?) -> Bool {
 }
 
 func changesPolicy(_ args: [String]) -> Bool {
+    if args.first == "groups", let action = args.dropFirst().first {
+        return ["set", "remove", "_set", "_remove"].contains(action)
+    }
     if args.first == "presets" {
         return args.count >= 3 && (args[1] != "route" || args.count == 4)
     }
@@ -52,11 +56,26 @@ func pendingPolicyMessage(_ status: ProtectionStatus, lookup: String = commandEx
                      "Changes are saved locally and can apply once system protection is ready.")
 }
 
-func applyRoutingPolicy(_ profile: ManagedProfile) throws {
-    let update = try JSONEncoder().encode(RoutingUpdate(profile))
+func applyRoutingPolicy(_ profile: ManagedProfile, includeDefaultOrder: Bool = false) throws {
+    let update = try JSONEncoder().encode(RoutingUpdate(profile, includeDefaultOrder: includeDefaultOrder))
     guard update.count <= maxConfigBytes else { throw RuleCollection.invalid }
     try ProtectedService.asAdministrator(["system", "_apply-routing"] + systemPresentation,
                                          executable: systemLauncher(), input: update)
+}
+
+func syncRoutingPolicy(_ profile: ManagedProfile, paths: Paths, includeDefaultOrder: Bool = false) throws {
+    guard let system = protectedConsoleStatus(paths, ProtectedService.installedStatus()),
+          system.routingRevision != (try profile.routing.systemPolicy.revision()) ||
+          (includeDefaultOrder && system.order != profile.order) else { return }
+    guard usesLivePolicy(system) else { print(pendingPolicyMessage(system)); return }
+    do {
+        try applyRoutingPolicy(profile, includeDefaultOrder: includeDefaultOrder)
+    } catch {
+        let apply = commandExample("system apply")
+        print(localized("已保存在本机，系统应用未完成。用 \(apply) 重试。",
+                        "Saved locally. Use \(apply) to retry applying the changes."))
+        throw error
+    }
 }
 
 func isProtectedConsoleCommand(_ args: [String]) -> Bool {
@@ -104,7 +123,7 @@ func systemStatusLines(_ status: ProtectionStatus) -> [String] {
 }
 
 private var missingSystemProfile: UserError {
-    let setup = commandExample("setup import")
+    let setup = commandExample("nodes import")
     return UserError(localized("请先用 \(setup) 导入节点。", "Import nodes with \(setup) first."))
 }
 
@@ -134,8 +153,24 @@ private func checkDeployment(_ submission: SystemSubmission, paths: Paths) throw
         pinnedChecks[node.name] = time
         print("✓ \(terminalText(node.name)) · \(time) ms")
     }
+    let active = profile.routing.activeTargets(submission.rules)
+    var failures = Set<String>()
+    for group in profile.routing.groups where active.contains(group.target) {
+        let member = try group.firstReachable { name in
+            if pinnedChecks[name] != nil { return true }
+            if failures.contains(name) { return false }
+            if let time = try? engine.test(name, url: probeURL, preparingSystem: true) {
+                pinnedChecks[name] = time
+                return true
+            }
+            failures.insert(name)
+            return false
+        }
+        print("✓ \(terminalText(group.name)) → \(terminalText(member)) · \(pinnedChecks[member] ?? 0) ms")
+        fflush(stdout)
+    }
     for name in profile.order {
-        guard let time = pinnedChecks[name] ?? (try? engine.test(name, url: probeURL, preparingSystem: true)) else {
+        guard let time = pinnedChecks[name] ?? (failures.contains(name) ? nil : try? engine.test(name, url: probeURL, preparingSystem: true)) else {
             print("× \(terminalText(name)) · " + localized("回环探测失败", "Loopback probe failed"))
             fflush(stdout)
             continue
@@ -246,9 +281,8 @@ func system(_ args: [String], _ paths: Paths) throws {
         proxyctl firewall on        在已通过的 TUN 试用上验证独立防护
         proxyctl system keep        保留通过验证的试用设置
         proxyctl system rollback    离线撤销本产品的系统设置
-        proxyctl system apply       将本机预设和其余流量出口应用到系统
+        proxyctl system apply       重试应用待同步的代理组和分流设置
         proxyctl system status | check | nodes | rules
-        proxyctl system use NODE | --auto
         proxyctl start | stop        验证并启动，或停止系统代理
         proxyctl enable | disable    设置下次开机是否自动启动
         """)
@@ -303,7 +337,10 @@ func system(_ args: [String], _ paths: Paths) throws {
             throw UserError(localized("需要正在运行且已启用 PF 防护的系统代理。",
                                       "This requires a running system proxy with PF protection enabled."))
         }
-        try paths.locked { try applyRoutingPolicy(ManagedProfile(paths.config)) }
+        try paths.locked {
+            let profile = try ManagedProfile(paths.config)
+            try applyRoutingPolicy(profile, includeDefaultOrder: profile.order != installed.order)
+        }
     case "plan", "prepare":
         guard rest.isEmpty || (action == "plan" && rest == ["--json"]) else {
             throw UserError(localized("未知的系统准备选项。", "Unknown system preparation option."))
@@ -315,13 +352,16 @@ func system(_ args: [String], _ paths: Paths) throws {
                 let profile = try validateSystemProfile(submission.profile, paths: paths)
                 let plan = SystemPlan(port: profile.port, fallback: profile.routing.fallback,
                                       presets: profile.routing.presets, collections: profile.routing.collections,
-                                      order: profile.order, rules: submission.rules,
+                                      order: profile.order, groups: profile.routing.groups, rules: submission.rules,
                                       upstream: profile.upstream != nil)
                 if rest == ["--json"] { try printJSON(plan) }
                 else {
                     print("离线校验通过 · \(plan.tunnel) · 回环端口 \(plan.port)")
                     print("默认出站 \(plan.fallback.displayName) · 分流预设 \(plan.presets.map(\.rawValue).joined(separator: ", "))")
                     print("策略组 \(plan.order.map(terminalText).joined(separator: " → "))")
+                    for group in plan.groups {
+                        print("\(terminalText(group.name))  \(group.order.map(terminalText).joined(separator: " → "))")
+                    }
                 }
                 return
             }
@@ -353,7 +393,8 @@ func system(_ args: [String], _ paths: Paths) throws {
     case "rules":
         if rest == ["add"], tty {
             let status = ProtectedService.installedStatus()
-            if let change = try promptForRule(nodeNames: status?.nodeRuleTargets ?? [], hasUpstream: status?.hasUpstream == true) {
+            if let change = try promptForRule(nodeNames: status?.nodeRuleTargets ?? [], groupNames: status?.groupRuleTargets ?? [],
+                                              hasUpstream: status?.hasUpstream == true) {
                 try runInstalledSystemCommand("rules", change)
             }
         } else {

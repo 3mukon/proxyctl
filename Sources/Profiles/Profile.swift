@@ -58,7 +58,10 @@ struct Profile {
     }
 
     func order(_ names: [String]) throws -> [String] {
-        let available = nodes.map(\.name)
+        try Self.order(names, among: nodes.map(\.name))
+    }
+
+    static func order(_ names: [String], among available: [String]) throws -> [String] {
         let selected = try names.map { name in
             guard let matched = Self.matchingName(name, in: available) else {
                 throw UserError(localized("无法唯一匹配所选节点。请使用列表里的完整名称。", "Use the full node name from the list."))
@@ -117,8 +120,7 @@ struct Profile {
             }
             return copy
         }
-        outbound.append(["type": "selector", "tag": selectorTag, "outbounds": selected, "default": selected[0],
-                         "interrupt_exist_connections": false])
+        outbound.append(ProxyGroup.selector(tag: selectorTag, order: selected))
         outbound.append(["type": "direct", "tag": directTag])
         if let upstream { outbound.append(upstream.config) }
         let secret = UUID().uuidString.lowercased() + UUID().uuidString.lowercased()
@@ -144,6 +146,11 @@ struct ManagedProfile {
     let secret: String
     let routing: Routing
     let upstream: Upstream?
+
+    func order(for target: RuleTarget) -> [String] {
+        if target == .proxy { return order }
+        return routing.groups.first { $0.target == target }?.order ?? []
+    }
 
     init(_ path: URL) throws {
         try self.init(loadObject(localData(path)))
@@ -197,14 +204,14 @@ private func writeProfile(_ data: Data, using paths: Paths, requireFreePorts: Bo
     guard rename(candidate.path, paths.config.path) == 0 else { throw UserError(localized("无法保存已通过校验的配置。", "Could not save the validated configuration.")) }
 }
 
-func saveDefaultGroup(_ names: [String], paths: Paths, expected: ManagedProfile? = nil) throws -> [String] {
+func saveDefaultGroup(_ names: [String], paths: Paths, expectedRevision: String? = nil) throws -> [String] {
     try paths.locked {
         guard FileManager.default.fileExists(atPath: paths.config.path) else {
             throw UserError(localized("请先添加节点。", "Add a node first."))
         }
         var config = try loadObject(localData(paths.config))
         let current = try ManagedProfile(config)
-        if let expected, expected.secret != current.secret || expected.order != current.order {
+        if let expectedRevision, expectedRevision != (try current.defaultOrderRevision()) {
             throw UserError(localized("默认代理组已有更新。按 Esc 返回，再打开编辑。",
                                       "The default proxy group changed. Go back and reopen the editor."))
         }
@@ -231,7 +238,7 @@ func writeRoutingProfile(_ routing: Routing, nodes: [Node], paths: Paths, requir
                          build: (Routing) throws -> [String: Any]) throws -> RuleFiles {
     let names = nodes.map(\.name)
     let previous = routing.ruleFiles(in: paths.state)
-    if let previous, previous.nodeNames == names {
+    if let previous, previous.nodeNames == names, previous.groupNames == routing.groupNames {
         try writeProfile(jsonData(build(routing)), using: paths, requireFreePorts: requireFreePorts)
         return previous
     }
@@ -240,7 +247,8 @@ func writeRoutingProfile(_ routing: Routing, nodes: [Node], paths: Paths, requir
     var updated = routing
     updated.rulesID = id
     updated.ruleNodes = names
-    let files = RuleFiles(state: paths.state, id: id, nodeNames: names)
+    updated.ruleGroups = routing.groupNames
+    let files = RuleFiles(state: paths.state, id: id, nodeNames: names, groupNames: routing.groupNames)
     try files.create(previous?.list() ?? [])
     do {
         try writeProfile(jsonData(build(updated)), using: paths, requireFreePorts: requireFreePorts)
@@ -279,7 +287,8 @@ func upgradeLoopbackProfile(_ paths: Paths) throws -> ManagedProfile {
         outbounds[selector]["interrupt_exist_connections"] = false
         config["outbounds"] = outbounds
     }
-    if profile.routing.rulesID == nil || profile.routing.ruleNodes != profile.nodes.map(\.name) || interrupts {
+    if profile.routing.rulesID == nil || profile.routing.ruleNodes != profile.nodes.map(\.name) ||
+        profile.routing.ruleGroups != profile.routing.groupNames || interrupts {
         try writeRoutingProfile(config, routing: profile.routing, paths: paths)
         return try ManagedProfile(paths.config)
     }

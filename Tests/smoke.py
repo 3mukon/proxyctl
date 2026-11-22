@@ -215,9 +215,9 @@ def verify_terminal_handoff(bundle, scratch, product):
                 assert output.count(b"\x1b[?1049h") == output.count(b"\x1b[?1049l") == 1
                 assert output.index(b"Raw input restored") < output.index(b"\x1b[?1049l")
             else:
-                assert b"/rules default" in output and b"/setup upstream" in output and b"proxyctl help" in output
+                assert b"/rules default" in output and b"/rules upstream" in output and b"proxyctl help" in output
                 assert all(b"/system " + action in output for action in (b"start", b"stop", b"enable", b"disable", b"rollback"))
-                assert b"/setup import" in output.rsplit(b"/system prepare", 1)[-1]
+                assert b"/nodes import" in output.rsplit(b"/system prepare", 1)[-1]
                 assert b"/help system" not in output
                 mask = termios.ECHO | termios.ICANON | termios.ISIG
                 assert termios.tcgetattr(slave)[3] & mask == original[3] & mask
@@ -318,14 +318,14 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert re.search(rb"\x1b\[(9|10);\d+H", menu_frame) is None
         menu_version = f"\x1b[2;{version_column}H".encode() + b"\x1b[38;2;151;146;141m" + version_badge
         assert menu_version in menu_frame and menu_frame.count(version_label) == 1
-        assert b"\x1b[11;5H\x1b[38;2;73;68;64m" + "╭".encode() in menu_frame
+        assert b"\x1b[12;5H\x1b[38;2;73;68;64m" + "╭".encode() in menu_frame
         expect("› /status", after=offset)
-        for name in (b"/nodes", b"/use", b"/check", b"/rules", b"/presets", b"/setup", b"/system", b"/lang", b"/help", b"/quit"):
+        for name in (b"/nodes", b"/groups", b"/check", b"/rules", b"/presets", b"/system", b"/lang", b"/help", b"/quit"):
             expect(b"H  " + name, after=offset)
-        expect("增删分流规则，设置其余流量的出口", after=offset)
-        expect("导入节点文件或编辑外部代理地址", after=offset)
+        expect("增删规则，设置其余流量和外部代理", after=offset)
+        expect("查看代理组及其主备顺位", after=offset)
         expect("检查当前代理路径，也可单独检测指定节点", after=offset)
-        for command_name in (b"/rules default", b"/service", b"/preview", b"/firewall", b"/doctor", b"/logs"):
+        for command_name in (b"/use", b"/setup", b"/rules default", b"/service", b"/preview", b"/firewall", b"/doctor", b"/logs"):
             assert command_name not in result[offset:]
         type_keys(b"\x1b\x1b", home, wait_for_input=True)
         type_keys(b"/", "› /status", wait_for_input=True)
@@ -351,7 +351,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         }
         assert len(protocol_offsets) == 1, rows
         assert "地址类型".encode() in frame and "顺位".encode() in frame
-        assert_shortcuts(frame, b"/nodes group", b"/nodes add", b"/setup import")
+        assert_shortcuts(frame, b"/nodes add", b"/nodes import")
         type_keys(b"/", "› /status", wait_for_input=True)
         type_keys(b"\x1b", "Esc 收起", wait_for_input=True)
         deselected_menu = result.rsplit(b"\x1b[2J", 1)[-1]
@@ -375,7 +375,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert b"H/nodes " in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\x1b", "输入 / 查看命令", wait_for_input=True)
         type_keys(b"/nodes add with-an-argument\r", "复制分享链接，再运行 /nodes add。")
-        type_keys(b"/use --auto\r\r", "用 /nodes group 编辑组成员和顺位。", wait_for_input=True)
+        type_keys(b"/use --auto\r\r", "用 /groups edit 编辑组成员和顺位。", wait_for_input=True)
         nodes_query = command + ["nodes", "--json"]
         original_group = json.loads(subprocess.check_output(nodes_query, timeout=8))
         type_keys(b"/nodes group\r\r", "默认代理组 · 本机配置", wait_for_input=True)
@@ -486,7 +486,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert "› Default proxy group".encode() in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\x03", "Type / for commands", wait_for_input=True)
         type_keys(b"/nodes \r", "Nodes · Local profile", wait_for_input=True)
-        type_keys(b"/nodes group\r\r", "Default proxy group · Local profile", wait_for_input=True)
+        type_keys(b"/groups edit default\r\r", "Default proxy group · Local profile", wait_for_input=True)
         type_keys(b"Other\r", "Priority 3", wait_for_input=True)
         type_keys(b"IPv6\r", "Move up", wait_for_input=True)
         type_keys(b"\r", "Save changes", wait_for_input=True)
@@ -503,6 +503,26 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert json.loads(subprocess.check_output(nodes_query, timeout=8))["order"] == ["Other Region"]
         type_keys(b"\x1b\x1b", "Type / for commands", wait_for_input=True)
         subprocess.run(command + ["nodes", "group", *original_group["order"]], check=True, capture_output=True, timeout=8)
+        type_keys(b"/groups \r", "Proxy groups · Local profile", wait_for_input=True)
+        assert_shortcuts(result.rsplit(b"\x1b[2J", 1)[-1], b"/groups edit")
+        type_keys(b"/groups edit ", "New proxy group", wait_for_input=True)
+        assert_reselection("› Default proxy group")
+        type_keys(b"new\r", b"H/groups edit --new ", wait_for_input=True)
+        type_keys(b"\r", "Enter a proxy group name.", wait_for_input=True)
+        type_keys(b"Work Group\r", "Choose a node to move", wait_for_input=True)
+        type_keys(b"Other\r", "Priority 1", wait_for_input=True)
+        type_keys(b"IPv6\r", "Priority 2", wait_for_input=True)
+        type_keys(b"\r", "Proxy group saved.", wait_for_input=True)
+        groups_query = command + ["groups", "--json"]
+        groups = json.loads(subprocess.check_output(groups_query, timeout=8))
+        assert groups["groups"] == [{"name": "Work Group", "order": ["Other Region", "美国 IPv6"]}]
+        type_keys(b"/presets route claude Work\r", b'H/presets route claude "group:Work Group" ', wait_for_input=True)
+        type_keys(b"\r", "Claude  →  Group · Work Group", wait_for_input=True)
+        type_keys(b"/presets route claude proxy\r\r", "Claude  →  Default proxy group", wait_for_input=True)
+        type_keys(b"/groups edit Work\r\r", "Delete proxy group", wait_for_input=True)
+        type_keys(b"Delete\r", "› Cancel", wait_for_input=True)
+        type_keys(b"\x1b[B\r", "Proxy group deleted.", wait_for_input=True)
+        assert not json.loads(subprocess.check_output(groups_query, timeout=8))["groups"]
         type_keys(b"/status \r", "Local profile ready", wait_for_input=True)
         status_frame = result.rsplit(b"\x1b[2J", 1)[-1]
         assert re.search(rb"\x1b\[4;7H\x1b\[[0-9;]+m Status ", status_frame)
@@ -525,7 +545,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"/rules \r", "No custom rules yet.", wait_for_input=True)
         rules_frame = result.rsplit(b"\x1b[2J", 1)[-1]
         assert b"Everything else" in rules_frame
-        assert_shortcuts(rules_frame, b"/rules add", b"/rules default")
+        assert_shortcuts(rules_frame, b"/rules add", b"/rules default", b"/rules upstream")
         type_keys(b"/rules add\r", "Type a domain or IP/CIDR")
         type_keys(b"sample.test ", b"H/rules add sample.test ", wait_for_input=True)
         assert_reselection("› Direct")
@@ -685,12 +705,11 @@ def tty_smoke(command, port, fetch, health, source, preview):
         positions = [catalog.index(row) for row in system_rows]
         assert positions == sorted(set(positions))
         for group, children in (
-            (b"nodes", (b"add", b"group")),
-            (b"use", (b"--auto",)),
+            (b"nodes", (b"add", b"import")),
+            (b"groups", (b"edit",)),
             (b"check", (b"node",)),
-            (b"rules", (b"add", b"remove", b"default")),
+            (b"rules", (b"add", b"remove", b"default", b"upstream")),
             (b"presets", (b"enable", b"disable", b"route", b"edit")),
-            (b"setup", (b"import", b"upstream")),
             (b"lang", (b"zh", b"en")),
         ):
             root = b"/" + group + b" "
@@ -705,23 +724,21 @@ def tty_smoke(command, port, fetch, health, source, preview):
             b"/status": b"Enter Run",
             b"/nodes": b"Add share links from clipboard",
             b"/nodes add": b"Enter Run",
-            b"/nodes group": b"Enter Open editor",
-            b"/use": b"Matching nodes",
-            b"/use --auto": b"Enter Run",
+            b"/nodes import": b"Type a file path",
+            b"/groups": b"Create a group or change its members and order",
+            b"/groups edit": b"New proxy group",
             b"/check": b"Check a specific node",
             b"/check node": b"Matching nodes",
             b"/rules": b"Choose where unmatched traffic goes",
             b"/rules add": b"Type a domain or IP/CIDR",
             b"/rules remove": b"No rules to remove",
             b"/rules default": b"Outbounds",
+            b"/rules upstream": b"Enter Open editor",
             b"/presets": b"Enable a preset",
             b"/presets enable": "› Claude".encode(),
             b"/presets disable": "› Claude".encode(),
             b"/presets route": "› Claude".encode(),
             b"/presets edit": b"New preset",
-            b"/setup": b"Import nodes from a sing-box JSON file",
-            b"/setup import": b"Type a file path",
-            b"/setup upstream": b"Enter Open editor",
             b"/system": b"Verify and start the system proxy",
             **{b"/system " + action: b"Enter Run" for action in system_actions},
             b"/lang": b"Language",
@@ -762,7 +779,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"/rules ", "Choose where unmatched traffic goes", wait_for_input=True)
         rule_menu = result.rsplit(b"\x1b[2J", 1)[-1]
         assert b"Add a routing rule" in rule_menu and b"Remove a routing rule" in rule_menu
-        assert b"H  upstream" not in rule_menu
+        assert b"H  upstream" in rule_menu
         type_keys(b"default\r", b"\x1b[26;9H/rules default ", wait_for_input=True)
         assert b"Default proxy group" in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\x1b[B\r", b"H/rules default proxy ")
@@ -780,7 +797,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         complete_form(b"socks5://127.0.0.1:42179\r", "Everything else  →  External upstream")
         assert json.loads(subprocess.check_output(default_query, timeout=8)) == "upstream"
         type_keys(b"/rules default direct\r\r", "Everything else  →  Direct", wait_for_input=True)
-        complete_form(b"/setup upstream off\r", "External upstream settings saved.")
+        complete_form(b"/rules upstream off\r", "External upstream settings saved.")
         type_keys(b"\x1b", "Type / for commands")
         type_keys(b"/nodes ", "Add share links from clipboard")
         type_keys(b"\x1b", "Enter Run  Esc Clear", wait_for_input=True)
@@ -860,7 +877,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert result_from_engine.stdout == "served by 美国", result_from_engine
         type_keys(b"\x03", "已停止", wait_for_input=True)
         resize(90, 28)
-        type_keys(b"/setup\r\r", "拖入 sing-box JSON")
+        type_keys(b"/nodes import\r\r", "拖入 sing-box JSON")
         type_keys(f"'{source}'\r".encode(), "按优先顺序选择节点")
         type_keys(b"IPv6\r", "所选顺序  美国 IPv6")
         type_keys("美国\r".encode(), "所选顺序  美国 IPv6 → 美国")
@@ -1418,6 +1435,80 @@ def verify_node_routes(bundle, scratch, primary, backup, dedicated):
     assert any(rule["target"] == "node:Added: Node" for rule in json.loads(cli("system", "plan", "--json"))["rules"])
 
 
+def verify_group_routes(bundle, scratch, primary, backup, dedicated):
+    state = scratch / "group routes"
+    source = scratch / "group-nodes.json"
+    source.write_text(json.dumps({"outbounds": [primary.outbound(), backup.outbound(), dedicated.outbound()]}))
+    port, controller = unused_ports()
+    command = [str(bundle / "bin/proxyctl"), "--state-dir", str(state)]
+    group = "Git Work"
+    target = f"group:{group}"
+    main_target = "group:Main Work"
+    health = "http://127.0.0.1:9/health"
+
+    def cli(*args, ok=True):
+        result = subprocess.run(command + list(args), capture_output=True, text=True, timeout=20)
+        assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
+        return result.stdout
+
+    cli("nodes", "import", str(source), "--node", primary.name, "--node", backup.name,
+        "--port", str(port), "--control-port", str(controller))
+    cli("groups", "set", group, dedicated.name, dedicated.name, ok=False)
+    cli("groups", "set", group, dedicated.name, backup.name)
+    cli("groups", "set", "Main Work", primary.name, backup.name)
+    cli("presets", "create", "GitHub", "group:git work", "github.test")
+    cli("rules", "add", "single.test", target)
+    cli("rules", "add", "localhost", "direct")
+    cli("presets", "route", "openai", main_target)
+    cli("rules", "default", target)
+    plan = json.loads(cli("system", "plan", "--json"))
+    assert plan["fallback"] == target
+    assert plan["groups"] == [{"name": group, "order": [dedicated.name, backup.name]},
+                              {"name": "Main Work", "order": [primary.name, backup.name]}]
+    assert any(rule["target"] == target and rule["value"] == "single.test" for rule in plan["rules"])
+    assert next(preset for preset in plan["collections"] if preset["name"] == "GitHub")["target"] == target
+    config = json.loads((state / "profile.json").read_text())
+    dns = config["dns"]
+    group_resolver = next(server for server in dns["servers"] if server.get("detour") == "proxyctl-group:" + group)
+    assert group_resolver["tag"] == dns["final"]
+    assert any(rule.get("domain_suffix") == ["github.test"] and rule["server"] == dns["final"] for rule in dns["rules"])
+    cli("groups", "remove", group, ok=False)
+    cli("rules", "default", "direct")
+    cli("presets", "delete", "GitHub")
+    cli("groups", "remove", group, ok=False)  # Still used by the independent rule file.
+    cli("presets", "create", "GitHub", target, "github.test")
+    cli("rules", "default", target)
+
+    def fetch(host):
+        return subprocess.run(["/usr/bin/curl", "-q", "-fsS", "--max-time", "2", "--noproxy", "",
+                               "--proxy", f"http://127.0.0.1:{port}", f"http://{host}/"],
+                              capture_output=True, text=True, timeout=3)
+
+    process = subprocess.Popen(command + ["preview"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        wait_for(lambda: fetch("github.test").stdout == dedicated.identity)
+        cli("use", "--auto", "--url", health)  # Point background checks at the fixture.
+        assert fetch("single.test").stdout == fetch("unmatched.test").stdout == dedicated.identity
+        healthy = ("api.anthropic.com", "api.openai.com")
+        assert all(fetch(host).stdout == primary.identity for host in healthy)
+
+        dedicated.available = False
+        wait_for(lambda: fetch("github.test").stdout == backup.identity, limit=18)
+        assert fetch("single.test").stdout == fetch("unmatched.test").stdout == backup.identity
+        groups = json.loads(cli("groups", "--json"))
+        assert groups["defaultMember"] == primary.name
+        assert [group["selectedNode"] for group in groups["groups"]] == [backup.name, primary.name]
+
+        backup.available = False
+        assert fetch("github.test").returncode != 0
+        assert all(fetch(host).stdout == primary.identity for host in healthy)
+        dedicated.available = True
+        wait_for(lambda: fetch("github.test").stdout == dedicated.identity, limit=18)
+    finally:
+        dedicated.available = backup.available = True
+        stop(process)
+
+
 def verify_routing_update(bundle, scratch, product, primary, backup):
     helper = scratch / "routing-update-test"
     profiles = product / "Sources/Profiles"
@@ -1442,7 +1533,7 @@ def verify_routing_update(bundle, scratch, product, primary, backup):
 
     try:
         wait_for(lambda: fetch("http://single.test/").stdout == primary.identity)
-        for host in ("api.anthropic.com", "new.openai.com", "unmatched.test"):
+        for host in ("api.anthropic.com", "new.openai.com", "unmatched.test", "group.test"):
             assert fetch(f"http://{host}/").stdout == backup.identity
         with http.server.ThreadingHTTPServer(("127.0.0.1", 0), DirectFixture) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1478,5 +1569,6 @@ if __name__ == "__main__":
             verify_share_links(bundle, scratch)
             verify_catch_all(bundle, scratch, first, outside)
             verify_node_routes(bundle, scratch, first, second, outside)
+            verify_group_routes(bundle, scratch, first, second, outside)
             verify_routing_update(bundle, scratch, product, first, second)
-    print("通过：双语控制台、链接导入、指定节点、未匹配流量的出口、规则热更新、主备切换及 TUN/PF 配置")
+    print("Passed bilingual console, node import, proxy groups, failover, live routing policies, and TUN/PF configuration checks.")

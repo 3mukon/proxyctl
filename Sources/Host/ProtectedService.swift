@@ -16,9 +16,11 @@ struct ProtectionStatus: Codable {
     let startsAtBoot: Bool?
     let verified: Bool?
     let nodeRuleTargets: [String]?
+    let groupRuleTargets: [String]?
     let sourceRevision: String?
     let fallback: RuleTarget?
     let routingRevision: String?
+    let groups: [ProxyGroupStatus]?
 }
 
 struct ProtectedService {
@@ -114,8 +116,10 @@ struct ProtectedService {
                                        automaticSelection: engine.selectionPreference().automatic,
                                        hasUpstream: engine.profile.upstream != nil, startsAtBoot: startsAtBoot,
                                        verified: state.isVerified, nodeRuleTargets: engine.profile.routing.ruleNodes,
+                                       groupRuleTargets: engine.profile.routing.ruleGroups.isEmpty ? nil : engine.profile.routing.ruleGroups,
                                        sourceRevision: state.sourceRevision, fallback: engine.profile.routing.fallback,
-                                       routingRevision: try engine.profile.routing.policy.revision())
+                                       routingRevision: try engine.profile.routing.policy.revision(),
+                                       groups: engine.profile.routing.groups.isEmpty ? nil : engine.groupStatus(running: running))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(summary)
@@ -143,7 +147,8 @@ struct ProtectedService {
                 throw UserError(localized("存在缺少外部出站的规则。", "A rule refers to an unconfigured upstream."))
             }
             let id = UUID()
-            let files = RuleFiles(state: privateState, id: id, nodeNames: checked.nodes.map(\.name))
+            let files = RuleFiles(state: privateState, id: id, nodeNames: checked.nodes.map(\.name),
+                                  groupNames: checked.routing.groupNames)
             let profile = try SystemProfile(preview, first: selected, rulesID: id)
             let candidate = privateState.appendingPathComponent("candidate-\(UUID().uuidString).json")
             let destination = try paths
@@ -276,9 +281,10 @@ struct ProtectedService {
         try ManagedCore(paths, system: true).wait()
     }
 
-    private func verifyTrialPath(_ engine: Engine, deadline: TimeInterval?, phase: String) throws {
+    private func verifyTrialPath(_ engine: Engine, deadline: TimeInterval?, phase: String,
+                                 changedTargets: Set<RuleTarget>? = nil) throws {
         do {
-            try TunnelCheck.dataPath(engine, deadline: deadline)
+            try TunnelCheck.dataPath(engine, deadline: deadline, changedTargets: changedTargets)
         } catch {
             throw UserError("\(phase) · \(error.localizedDescription)")
         }
@@ -301,14 +307,35 @@ struct ProtectedService {
             let currentNode = try engine.current()
             let old = try localData(paths.config)
             let candidate = try update.candidate(from: loadObject(old))
+            let next = try ManagedProfile(candidate, system: true)
+            let oldFiles = engine.profile.routing.ruleFiles(in: paths.state)
+            let nextFiles = next.routing.ruleFiles(in: paths.state)
+            let rules = try oldFiles?.list() ?? []
+            let nextTargets = next.routing.activeTargets(rules)
+            let expanded = next.routing.expandedTargets(since: engine.profile.routing)
+            let changedGroups = next.routing.groups.filter {
+                nextTargets.contains($0.target) && (expanded.contains($0.target) || !engine.profile.routing.groups.contains($0))
+            }
+            let orderChanged = engine.profile.order != next.order
+            let selections = try engine.healthyMembers(for: changedGroups, defaultOrder: orderChanged ? next.order : nil)
+            var committed = false
+            defer {
+                if let oldFiles, let nextFiles, oldFiles.groupNames != nextFiles.groupNames {
+                    if committed { oldFiles.removeGroupSlots(omittedFrom: nextFiles) }
+                    else if !routingRollback.pending { nextFiles.removeGroupSlots(omittedFrom: oldFiles) }
+                }
+            }
             // The independent watchdog must know how to restore the previous config before the core is restarted.
             guard let executable = Bundle.main.executableURL?.resolvingSymlinksInPath() else {
                 throw UserError("Could not locate the system driver.")
             }
-            let changed = engine.profile.routing.policy != update.policy
+            let changed = orderChanged || engine.profile.routing.policy != update.policy
             let checked = privateState.appendingPathComponent("routing-candidate-\(UUID().uuidString).json")
             defer { try? FileManager.default.removeItem(at: checked) }
             if changed {
+                if let oldFiles, let nextFiles, oldFiles.groupNames != nextFiles.groupNames {
+                    try nextFiles.prepareGroupSlots(previous: oldFiles)
+                }
                 try savePrivate(jsonData(candidate), to: checked)
                 try paths.coreCheck(checked)
             }
@@ -328,13 +355,16 @@ struct ProtectedService {
                 }
                 let deadline = ProcessInfo.processInfo.systemUptime + Self.interval
                 let restarted = try startCore(deadline: deadline)
-                try restarted.select(currentNode)
+                if !orderChanged { try restarted.select(currentNode) }
+                for (target, member) in selections { try restarted.select(member, in: target) }
                 try verifyTrialPath(restarted, deadline: deadline,
-                                    phase: localized("路由更新验证", "Routing validation"))
+                                    phase: localized("路由更新验证", "Routing validation"),
+                                    changedTargets: expanded.union(selections.map { $0.0 }))
                 guard filter.active() else {
                     throw UserError(localized("PF 防护未就绪。", "PF protection is not ready."))
                 }
                 try routingRollback.commit()
+                committed = true
             } catch {
                 let failure = error
                 do {
@@ -383,7 +413,12 @@ struct ProtectedService {
                                      bootID: try Self.bootID(), uplink: uplink, sourceRevision: state.sourceRevision)
         try save(trial)
         do {
-            try verifyTrialPath(startCore(deadline: trial.deadline), deadline: trial.deadline,
+            let engine = try startCore(deadline: trial.deadline)
+            let rules = try engine.profile.routing.ruleFiles(in: paths.state)?.list() ?? []
+            let targets = engine.profile.routing.activeTargets(rules)
+            let groups = engine.profile.routing.groups.filter { targets.contains($0.target) }
+            for (target, member) in try engine.healthyMembers(for: groups) { try engine.select(member, in: target) }
+            try verifyTrialPath(engine, deadline: trial.deadline,
                                 phase: localized("首次 TUN 检查", "Initial TUN check"))
             try publish(trial)
         } catch {
@@ -663,7 +698,7 @@ struct ProtectedService {
             throw UserError(localized("请用新版重新准备系统配置后再编辑规则。", "Prepare the system profile with this release before editing its rules."))
         }
         let change = try RuleChange(args, hasUpstream: engine.profile.upstream != nil,
-                                    nodeNames: engine.profile.nodes.map(\.name))
+                                    nodeNames: engine.profile.nodes.map(\.name), groupNames: files.groupNames)
         try files.update(change)
         print(ruleChangeMessage(change))
     }
