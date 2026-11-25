@@ -45,6 +45,10 @@ Separate launchd jobs run the TUN engine and PF supervisor. Complete the timed T
 
 ## Development
 
-`sh scripts/build.sh` produces `.build/release/` and requires Apple Command Line Tools. The build obtains the pinned engine release from SagerNet and verifies its SHA-256 before packaging. For an offline build, pass the path to the official archive as an argument. The package includes the engine version, license, and source link.
+`sh scripts/build.sh` produces `.build/release/` and requires Apple Command Line Tools. The build obtains the pinned engine release from SagerNet and verifies its SHA-256 before packaging. For an offline build, pass the path to the official archive as an argument.
 
 `sh scripts/check.sh` builds the release and runs isolated end-to-end tests on the Mac. Start with the [documentation index](docs/INDEX.md).
+
+## License
+
+Proxyctl's code and documentation are licensed under the [MIT License](LICENSE). The bundled [sing-box](https://github.com/SagerNet/sing-box#license) executable retains its GNU General Public License, version 3 or later. The release's `licenses/` directory contains both licenses and a link to the source of the bundled sing-box version.
