@@ -51,4 +51,4 @@ Separate launchd jobs run the TUN engine and PF supervisor. Complete the timed T
 
 ## License
 
-Proxyctl's code and documentation are licensed under the [MIT License](LICENSE). The bundled [sing-box](https://github.com/SagerNet/sing-box#license) executable retains its GNU General Public License, version 3 or later. The release's `licenses/` directory contains both licenses and a link to the source of the bundled sing-box version.
+Proxyctl's code and documentation are licensed under the [MIT License](LICENSE). The bundled [sing-box](https://github.com/SagerNet/sing-box#license) executable retains its GNU General Public License, version 3 or later. The package's `licenses/` directory contains the Proxyctl license, the copyright and license notice supplied with sing-box, and a link to the pinned sing-box source.
