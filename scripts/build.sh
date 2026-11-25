@@ -17,6 +17,7 @@ upstream=$(sh "$root/scripts/fetch-core.sh" "${1:-}")
 /usr/bin/install -m 755 "$upstream/sing-box" "$release/libexec/sing-box"
 /usr/bin/install -m 644 "$root/LICENSE" "$release/licenses/proxyctl.txt"
 /usr/bin/install -m 644 "$upstream/LICENSE" "$release/licenses/sing-box.txt"
+/usr/bin/install -m 644 "$root/licenses/GPL-3.0.txt" "$release/licenses/GPL-3.0.txt"
+/usr/bin/install -m 644 "$root/docs/distribution.md" "$release/licenses/sing-box-source.md"
 /usr/bin/install -m 755 "$root/scripts/install.sh" "$release/install.sh"
-printf '%s\n' 'https://github.com/SagerNet/sing-box/tree/v1.14.4' > "$release/licenses/sing-box-source.txt"
 printf '安装包已生成 %s\n' "$release"

@@ -29,3 +29,4 @@ Start here and open the documents whose summary matches your task.
 | ID | Status | Title | Summary |
 | --- | --- | --- | --- |
 | [DOC-operations](operations.md) | current | Proxyctl operations | Configure nodes and presets, verify forwarding, and manage protection and recovery. |
+| [DOC-distribution](distribution.md) | current | Release packaging and corresponding source | Build the macOS archive and provide license notices and the exact source of its bundled engine. |

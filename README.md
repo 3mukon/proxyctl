@@ -4,7 +4,7 @@ A system proxy and firewall for macOS. The system TUN sends public traffic to th
 
 ## Getting started
 
-Run `sh install.sh` from the release directory. Enter `proxyctl` to open the full-screen console. Type `/` for daily commands. Use Up and Down to select a match. Enter or Tab inserts the selection and a space and shows any next options. With no highlighted row, Enter runs a complete command. When a required choice is pending, Enter restores the previous highlight in the same list. Use `/help` for the command catalog and shortcuts. Press Esc to go back one layer at a time through selections, suggestions, input, or the current page. Use Left and Right when results span multiple pages.
+Download `proxyctl-<version>-macos-arm64.tar.gz` from [GitHub Releases](https://github.com/3mukon/proxyctl/releases). Extract it and run `sh install.sh` from the extracted folder using your regular account. Enter `proxyctl` to open the full-screen console. Type `/` for daily commands. Use Up and Down to select a match. Enter or Tab inserts the selection and a space and shows any next options. With no highlighted row, Enter runs a complete command. When a required choice is pending, Enter restores the previous highlight in the same list. Use `/help` for the command catalog and shortcuts. Press Esc to go back one layer at a time through selections, suggestions, input, or the current page. Use Left and Right when results span multiple pages.
 
 Use `/lang` to choose Simplified Chinese or English and `/quit` to leave the console. Both are in the daily command list.
 
@@ -51,4 +51,4 @@ Separate launchd jobs run the TUN engine and PF supervisor. Complete the timed T
 
 ## License
 
-Proxyctl's code and documentation are licensed under the [MIT License](LICENSE). The bundled [sing-box](https://github.com/SagerNet/sing-box#license) executable retains its GNU General Public License, version 3 or later. The package's `licenses/` directory contains the Proxyctl license, the copyright and license notice supplied with sing-box, and a link to the pinned sing-box source.
+Proxyctl's code and documentation are licensed under the [MIT License](LICENSE). The bundled [sing-box](https://github.com/SagerNet/sing-box#license) executable retains its GNU General Public License, version 3 or later. The package includes both license texts and the upstream notice. The corresponding sing-box source and build inputs are described in the [distribution guide](docs/distribution.md).

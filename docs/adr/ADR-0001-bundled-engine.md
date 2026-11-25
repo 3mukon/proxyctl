@@ -28,7 +28,7 @@ Ship a native Swift CLI with a pinned sing-box executable. The CLI runs as the c
 
 ## Consequences
 
-The release can be installed offline. The loopback service runs across login sessions and can be tested alongside the active VPN. Transparent TUN, routing, and firewall takeover have separate acceptance checks. The release includes the engine license from the upstream archive and a link to the corresponding source.
+The release can be installed offline. The loopback service runs across login sessions and can be tested alongside the active VPN. Transparent TUN, routing, and firewall takeover have separate acceptance checks. The release preserves the upstream notice and includes the GPL text. The [distribution guide](../distribution.md) identifies the exact engine source and build inputs.
 
 ## References
 
