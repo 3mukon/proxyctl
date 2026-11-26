@@ -20,7 +20,32 @@ struct RoutingUpdateTests {
         let initial = Routing(presets: [.claude, .openai])
         let preview = try source.managed(order: [first], port: port, controllerPort: controller, routing: initial)
         let id = UUID()
-        let installed = try SystemProfile(preview, rulesID: id).config
+        var installed = try SystemProfile(preview, rulesID: id).config
+        var oldRoute = installed["route"] as! [String: Any]
+        let definitions = oldRoute["rule_set"] as! [[String: Any]]
+        let gemini = RuleCollection.preset(.gemini)
+        let oldDefinitions = definitions.filter { ($0["tag"] as? String) != gemini.tag }
+        oldRoute["rule_set"] = oldDefinitions
+        installed["route"] = oldRoute
+
+        let oldProfile = try ManagedProfile(installed, system: true)
+        precondition(oldProfile.routing.collections == initial.collections)
+        var previousPolicy = oldProfile.routing.policy
+        previousPolicy.collections.removeAll { $0.name == gemini.name }
+        let previousRevision = try previousPolicy.revision()
+        let upgradedRevision = try oldProfile.routing.policy.revision()
+        precondition(upgradedRevision == previousRevision)
+
+        var collision = installed
+        let custom = RuleCollection(name: "Gemini", target: .direct, enabled: true, domains: ["custom.test"], networks: [])
+        oldRoute["rule_set"] = oldDefinitions + [custom.definition]
+        oldRoute["rules"] = (oldRoute["rules"] as! [[String: Any]]) +
+            [["rule_set": [custom.tag], "action": "route", "outbound": custom.target.outbound]]
+        collision["route"] = oldRoute
+        let collections = try ManagedProfile(collision, system: true).routing.collections
+        precondition(collections.prefix(3).last == gemini)
+        precondition(collections.last == RuleCollection(name: "Gemini (custom)", target: .direct, enabled: true,
+                                                        domains: ["custom.test"], networks: []))
         let rules = [try CustomRule("single.test", target: .node(first))]
         let files = RuleFiles(state: directory, id: id, nodeNames: [first, second])
         try files.create(rules)
@@ -33,6 +58,9 @@ struct RoutingUpdateTests {
         desired.groups = [group]
         desired.collections[0].target = group.target
         desired.collections[1].enabled = false
+        let geminiIndex = desired.collections.firstIndex { $0.name == gemini.name }!
+        desired.collections[geminiIndex].enabled = true
+        desired.collections[geminiIndex].target = .node(first)
         desired.collections += [RuleCollection(name: "Local web", target: .direct, enabled: true,
                                               domains: ["local.test"], networks: ["127.0.0.1/32"])]
         desired.fallback = .node(second)
@@ -43,13 +71,16 @@ struct RoutingUpdateTests {
         let resulting = try ManagedProfile(candidate, system: true)
         precondition(resulting.routing.policy == desired.policy)
         precondition(resulting.routing.rulesID == id && resulting.order == [first])
+        let dns = candidate["dns"] as! [String: Any]
+        let geminiDNS = (dns["rules"] as! [[String: Any]]).filter { ($0["domain_suffix"] as? [String]) == gemini.domains }
+        precondition(geminiDNS.compactMap { $0["server"] as? String } == [fakeDNS, RuleTarget.node(first).resolver])
         let withDefaultOrder = try RoutingUpdate(ManagedProfile(edited), includeDefaultOrder: true).candidate(from: installed)
         let reordered = try ManagedProfile(withDefaultOrder, system: true)
         precondition(reordered.order == [second, first])
         let beforeSecret = try ManagedProfile(installed, system: true).secret
         precondition(resulting.secret == beforeSecret)
         let expanded = resulting.routing.expandedTargets(since: try ManagedProfile(installed, system: true).routing)
-        precondition(expanded == [.node(second), group.target, .direct])
+        precondition(expanded == [.node(first), .node(second), group.target, .direct])
         var narrowed = resulting.routing
         narrowed.collections[0].domains.removeLast()
         precondition(narrowed.expandedTargets(since: resulting.routing).isEmpty)

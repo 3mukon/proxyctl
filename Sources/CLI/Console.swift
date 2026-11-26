@@ -59,7 +59,7 @@ private var commands: [CommandChoice] {
         .init("rules", localized("增删规则，设置其余流量和外部代理", "Manage rules, unmatched traffic, and the external proxy"),
               help: localized("查看自定义规则和「其余全部」当前使用的出口。", "List custom rules and see where unmatched traffic goes.")),
         .init("presets", localized("启停分流预设、编辑匹配项、选择出口", "Turn presets on or off, edit matches, and choose outbounds"),
-              help: localized("查看 Claude、OpenAI 和自定义分流预设。", "See the Claude, OpenAI, and custom routing presets.")),
+              help: localized("查看内置和自定义分流预设。", "View built-in and custom routing presets.")),
         .init("system", localized("启停系统代理、回退和开机自启", "Manage the system proxy, recovery, and startup at boot"),
               help: localized("查看系统状态。启动会验证隧道和防火墙。开机自启可单独设置。",
                               "View system status. Start verifies the tunnel and firewall. Startup at boot is separate.")),

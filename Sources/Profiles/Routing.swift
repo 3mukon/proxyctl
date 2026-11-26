@@ -9,6 +9,7 @@ let fakeDNS = "proxyctl-proxy-addresses"
 enum Preset: String, CaseIterable, Codable {
     case claude
     case openai
+    case gemini
 
     var domains: [String] {
         switch self {
@@ -16,6 +17,17 @@ enum Preset: String, CaseIterable, Codable {
             return ["anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com", "anthropicusercontent.com"]
         case .openai:
             return ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "oaistatsig.com", "openaimerge.com", "sora.com"]
+        case .gemini:
+            return [
+                "gemini.google.com", "gemini.google", "bard.google.com", "gemini.gstatic.com",
+                "geminiweb-pa.clients6.google.com",
+                "robinfrontend-pa.googleapis.com", "webchannel-robinfrontend-pa.googleapis.com",
+                "robinfrontend-pa.mtls.googleapis.com", "webchannel-robinfrontend-pa.mtls.googleapis.com",
+                "aistudio.google.com", "makersuite.google.com", "alkalimakersuite-pa.clients6.google.com",
+                "webchannel-alkalimakersuite-pa.clients6.google.com",
+                "alkalimakersuiteapplets.pa.clients6.google.com", "alkalimakersuiteapplets.pa.googleapis.com",
+                "generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "cloudaicompanion.googleapis.com"
+            ]
         }
     }
 }

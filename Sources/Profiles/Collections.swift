@@ -10,6 +10,7 @@ struct RuleCollection: Codable, Equatable {
     private static let titles: [String: (chinese: String, english: String)] = [
         "claude": ("Claude", "Claude"),
         "openai": ("OpenAI", "OpenAI"),
+        "gemini": ("Gemini", "Gemini"),
         "apple-relay": ("Apple 中继", "Apple Relay"),
         "direct-services": ("常用直连服务", "Direct Services"),
         "local-network": ("局域网", "Local Network"),
@@ -54,26 +55,31 @@ struct RuleCollection: Codable, Equatable {
 
     var tag: String { "\(Self.prefix)\(target.identifier):\(name)" }
 
+    private static func validStoredName(_ value: String) -> Bool {
+        Profile.validName(value) && value.utf8.count <= 80 && !value.contains(":")
+    }
+
     static func validName(_ value: String) -> Bool {
-        Profile.validName(value) && value.utf8.count <= 80 && !value.contains(":") &&
-            !Preset.allCases.contains { $0.rawValue != value && $0.rawValue.lowercased() == value.lowercased() }
+        validStoredName(value) && !Preset.allCases.contains { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }
+    }
+
+    static func preset(_ preset: Preset, enabled: Bool = false) -> RuleCollection {
+        RuleCollection(name: preset.rawValue, target: .proxy, enabled: enabled, domains: preset.domains, networks: [])
     }
 
     static func defaults(_ enabled: [Preset]) -> [RuleCollection] {
-        Preset.allCases.map {
-            RuleCollection(name: $0.rawValue, target: .proxy, enabled: enabled.contains($0),
-                           domains: $0.domains, networks: [])
-        }
+        Preset.allCases.map { preset($0, enabled: enabled.contains($0)) }
     }
 
     static func decode(_ sets: [[String: Any]], routes: [[String: Any]], targets: [RuleTarget]) throws -> [RuleCollection] {
+        let originalPresets = [Preset.claude.rawValue, Preset.openai.rawValue]
         let identifiers = Dictionary(uniqueKeysWithValues: targets.map { ($0.identifier, $0) })
         var collections: [RuleCollection] = []
         for set in sets {
             guard let tag = set["tag"] as? String, tag.hasPrefix(prefix) else { continue }
             let parts = tag.dropFirst(prefix.count).split(separator: ":", maxSplits: 1).map(String.init)
-            guard parts.count == 2, let target = identifiers[parts[0]], validName(parts[1]),
-                  Preset(rawValue: parts[1]) == nil || target.usesManagedProxy,
+            guard parts.count == 2, let target = identifiers[parts[0]], validStoredName(parts[1]),
+                  !originalPresets.contains(parts[1]) || target.usesManagedProxy,
                   set["type"] as? String == "inline", let entries = entries(in: set),
                   entries.count <= 2, entries.allSatisfy({ $0.count == 1 }),
                   entries.flatMap(\.keys).allSatisfy({ RuleMatch(rawValue: $0) != nil }),
@@ -87,9 +93,28 @@ struct RuleCollection: Codable, Equatable {
                                                domains: try canonical(domains, .domain),
                                                networks: try canonical(networks, .network)))
         }
-        if !collections.isEmpty && Array(collections.prefix(Preset.allCases.count)).map(\.name) != Preset.allCases.map(\.rawValue) {
-            throw invalid
+        guard !collections.isEmpty else { return [] }
+        guard collections.prefix(originalPresets.count).map(\.name) == originalPresets else { throw invalid }
+
+        let gemini = preset(.gemini)
+        let position = originalPresets.count
+        if let existingIndex = index(matching: gemini.name, in: collections) {
+            let existing = collections[existingIndex]
+            if existingIndex == position, existing.name == gemini.name, existing.target.usesManagedProxy {
+                return collections
+            }
+            // Keep a legacy custom preset's members, outbound, and matching precedence.
+            let base = "\(existing.name) (custom)"
+            var name = base
+            var suffix = 2
+            while index(matching: name, in: collections) != nil {
+                name = "\(base) \(suffix)"
+                suffix += 1
+            }
+            collections[existingIndex] = RuleCollection(name: name, target: existing.target, enabled: existing.enabled,
+                                                        domains: existing.domains, networks: existing.networks)
         }
+        collections.insert(gemini, at: position)
         return collections
     }
 

@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-let version = "0.1.0"
+let version = "0.1.1"
 let tty = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
 let color = tty && ProcessInfo.processInfo.environment["NO_COLOR"] == nil && ProcessInfo.processInfo.environment["TERM"] != "dumb"
 umask(0o077)
@@ -25,6 +25,8 @@ func problem(_ error: Error) {
     }
     fputs(styled("! ", "1;33") + terminalText(error.localizedDescription) + "\n", stderr)
 }
+
+private var presetNames: String { Preset.allCases.map(\.rawValue).joined(separator: ", ") }
 
 func help() {
     if interfaceLanguage == .en {
@@ -54,6 +56,7 @@ func help() {
           proxyctl doctor                  Check the engine and profile
           proxyctl logs                    Show recent engine logs
 
+        Use --group NAME or repeat --node NODE with nodes import. --preset accepts \(presetNames).
         Enter /help in the console for interactive commands and keys.
         """)
         return
@@ -84,7 +87,7 @@ func help() {
       proxyctl doctor                  查看内核和本地配置
       proxyctl logs                    查看近期内核日志
 
-    nodes import 可用 --group NAME，或重复 --node NODE。--preset 可选 claude 或 openai。
+    nodes import 可用 --group NAME，或重复 --node NODE。--preset 可选 \(presetNames)。
     在控制台输入 /help 可查看交互命令和按键。
     --port 默认 11082，--control-port 默认 19082。
     """)
@@ -250,7 +253,9 @@ func setup(_ args: [String], _ paths: Paths) throws {
         case "--group": group = value
         case "--upstream": external = value
         case "--preset":
-            guard let preset = Preset(rawValue: value) else { throw UserError(localized("预设可选 claude 或 openai。", "Choose claude or openai.")) }
+            guard let preset = Preset(rawValue: value) else {
+                throw UserError(localized("可用预设为 \(presetNames)。", "Available presets are \(presetNames)."))
+            }
             presets.append(preset)
         case "--default":
             guard let route = RuleTarget(rawValue: value) else { throw UserError(localized("请选择有效的默认出站。", "Choose a valid default outbound.")) }

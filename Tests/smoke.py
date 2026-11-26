@@ -684,6 +684,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
             (b"/check node IPv6", "› 美国 IPv6"),
             (b"/lang Eng", "› English"),
             (b"/presets enable ope", "› OpenAI"),
+            (b"/presets route gem", "› Gemini"),
             (b"/presets disable ope", "› OpenAI"),
             (b"/rules default IPv6", "› Node · 美国 IPv6"),
         ):
@@ -985,7 +986,8 @@ def verify(bundle, scratch, fixture, first, second, outside):
     retired.symlink_to(home / ".local/share/proxyctl/versions/0.1.0/bin/proxyctl")
     for _ in range(2):
         subprocess.run(["/bin/sh", str(bundle / "install.sh")], env=env, check=True, capture_output=True, timeout=15)
-    assert subprocess.check_output(["proxyctl", "--version"], env=env, text=True).strip() == "0.1.0"
+    bundled_version = subprocess.check_output([str(bundle / "bin/proxyctl"), "--version"], text=True).strip()
+    assert subprocess.check_output(["proxyctl", "--version"], env=env, text=True).strip() == bundled_version
     assert not retired.is_symlink()
     retired.write_text("unrelated command")
     subprocess.run(["/bin/sh", str(bundle / "install.sh")], env=env, check=True, capture_output=True, timeout=15)
@@ -1036,7 +1038,7 @@ def verify(bundle, scratch, fixture, first, second, outside):
     assert json.loads(cli("status", "--json"))["service"] == "ready"
     assert config.read_bytes() == baseline
     planned = json.loads(cli("system", "plan", "--json"))
-    assert planned["fallback"] == "direct" and planned["presets"] == ["claude", "openai"]
+    assert planned["fallback"] == "direct" and planned["presets"] == ["claude", "openai", "gemini"]
 
     def preview(expected, automatic=False):
         if automatic:
@@ -1104,16 +1106,16 @@ def verify(bundle, scratch, fixture, first, second, outside):
         stop(process)
 
     cli("setup", str(source), "--port", str(port), "--control-port", str(control),
-        "--node", first.name, "--node", second.name, "--preset", "claude")
+        "--node", first.name, "--node", second.name, "--preset", "claude", "--preset", "gemini")
     enabled = {entry["name"]: entry["enabled"] for entry in json.loads(cli("presets", "--json"))}
-    assert enabled == {"claude": True, "openai": False}
+    assert enabled == {"claude": True, "openai": False, "gemini": True}
     cli("presets", "enable", "openai")
     cli("presets", "disable", "claude")
     plan = json.loads(cli("system", "plan", "--json"))
-    assert plan["presets"] == ["openai"] and plan["fallback"] == "direct" and len(plan["addresses"]) == 2
+    assert plan["presets"] == ["openai", "gemini"] and plan["fallback"] == "direct" and len(plan["addresses"]) == 2
     cli("presets", "enable", "claude")
     plan = json.loads(cli("system", "plan", "--json"))
-    assert plan["presets"] == ["claude", "openai"] and plan["order"] == [first.name, second.name]
+    assert plan["presets"] == ["claude", "openai", "gemini"] and plan["order"] == [first.name, second.name]
     rules = cli("firewall", "plan")
     assert "on utun99" in rules and "user = 0 group =" in rules
     assert "block drop out quick inet all" in rules and "block drop out quick inet6 all" in rules
@@ -1127,9 +1129,11 @@ def verify(bundle, scratch, fixture, first, second, outside):
             assert fetch(direct_url).stdout == "served directly"
             payload(first, "http://api.anthropic.com/payload")
             payload(first, "http://chatgpt.com/payload")
+            payload(first, "http://gemini.google.com/payload")
             first.available = second.available = False
             assert fetch("http://api.anthropic.com/payload").returncode != 0
             assert fetch("http://chatgpt.com/payload").returncode != 0
+            assert fetch("http://gemini.google.com/payload").returncode != 0
             result = fetch(direct_url)
             assert result.returncode == 0 and result.stdout == "served directly", result
             assert outside.received == 0
@@ -1345,6 +1349,7 @@ def verify_catch_all(bundle, scratch, primary, upstream):
     assert json.loads(cli("rules", "default", "--json")) == "upstream"
     cli("rules", "upstream", "off", ok=False)
     cli("presets", "create", "Work", "proxy", "*.work.test")
+    cli("presets", "create", "Google", "upstream", "google.com")
     cli("presets", "add", "Work", "192.0.2.4/24")
     cli("presets", "add", "claude", "renamed.test")
     cli("presets", "create", "Empty", "direct")
@@ -1366,6 +1371,21 @@ def verify_catch_all(bundle, scratch, primary, upstream):
                 break
             time.sleep(.1)
         assert fetch("http://no-match.test/").stdout == upstream.identity
+        gemini_hosts = (
+            "gemini.google.com", "gemini.google", "bard.google.com", "gemini.gstatic.com",
+            "geminiweb-pa.clients6.google.com",
+            "robinfrontend-pa.googleapis.com", "webchannel-robinfrontend-pa.googleapis.com",
+            "robinfrontend-pa.mtls.googleapis.com", "webchannel-robinfrontend-pa.mtls.googleapis.com",
+            "aistudio.google.com", "makersuite.google.com", "alkalimakersuite-pa.clients6.google.com",
+            "webchannel-alkalimakersuite-pa.clients6.google.com",
+            "alkalimakersuiteapplets.pa.clients6.google.com", "alkalimakersuiteapplets.pa.googleapis.com",
+            "generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "cloudaicompanion.googleapis.com",
+        )
+        for host in gemini_hosts:
+            assert fetch(f"http://{host}/").stdout == primary.identity, host
+        for host in ("www.google.com", "www.gstatic.com", "accounts.google.com", "oauth2.googleapis.com",
+                     "aiplatform.googleapis.com", "www.youtube.com"):
+            assert fetch(f"http://{host}/").stdout == upstream.identity
         assert fetch("http://api.openai.com/").stdout == upstream.identity
         assert fetch("http://api.anthropic.com/").stdout == primary.identity
         assert fetch("http://api.renamed.test/").stdout == primary.identity
@@ -1386,12 +1406,13 @@ def verify_catch_all(bundle, scratch, primary, upstream):
     labels = [
         ("claude", "Claude", "Claude"),
         ("openai", "OpenAI", "OpenAI"),
+        ("gemini", "Gemini", "Gemini"),
         ("apple-relay", "Apple 中继", "Apple Relay"),
         ("direct-services", "常用直连服务", "Direct Services"),
         ("local-network", "局域网", "Local Network"),
         ("international-services", "国际服务", "International Services"),
     ]
-    for name, _, _ in labels[2:]:
+    for name, _, _ in labels[3:]:
         cli("presets", "create", name, "proxy", f"{name}.example.test")
     cli("presets", "disable", "国际服务")
     assert not next(group for group in json.loads(cli("presets", "--json")) if group["name"] == "international-services")["enabled"]
@@ -1439,7 +1460,7 @@ def verify_node_routes(bundle, scratch, fixture, primary, backup, dedicated):
     plan = json.loads(cli("system", "plan", "--json"))
     assert plan["fallback"] == pin and dedicated.name not in plan["order"]
     assert {entry["name"]: entry["target"] for entry in plan["collections"]} == {
-        "claude": "proxy", "openai": pin, "Work": primary_pin,
+        "claude": "proxy", "openai": pin, "gemini": "proxy", "Work": primary_pin,
     }
     assert any(item["target"] == primary_pin and item["match"] == "ip_cidr" for item in plan["rules"])
     candidate = json.loads(profile.read_text())
@@ -1524,6 +1545,8 @@ def verify_group_routes(bundle, scratch, fixture, primary, backup, dedicated):
     cli("rules", "add", "single.test", target)
     cli("rules", "add", "localhost", "direct")
     cli("presets", "route", "openai", main_target)
+    cli("presets", "route", "Gemini", "direct", ok=False)
+    cli("presets", "route", "Gemini", main_target)
     cli("rules", "default", target)
     plan = json.loads(cli("system", "plan", "--json"))
     assert plan["fallback"] == target
@@ -1552,7 +1575,7 @@ def verify_group_routes(bundle, scratch, fixture, primary, backup, dedicated):
     try:
         wait_for(lambda: fetch("github.test").stdout == dedicated.identity)
         assert fetch("single.test").stdout == fetch("unmatched.test").stdout == dedicated.identity
-        healthy = ("api.anthropic.com", "api.openai.com")
+        healthy = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com")
         assert all(fetch(host).stdout == primary.identity for host in healthy)
 
         dedicated.available = False
@@ -1596,6 +1619,7 @@ def verify_routing_update(bundle, scratch, product, primary, backup):
 
     try:
         wait_for(lambda: fetch("http://single.test/").stdout == primary.identity)
+        assert fetch("http://generativelanguage.googleapis.com/").stdout == primary.identity
         for host in ("api.anthropic.com", "new.openai.com", "unmatched.test", "group.test"):
             assert fetch(f"http://{host}/").stdout == backup.identity
         with http.server.ThreadingHTTPServer(("127.0.0.1", 0), DirectFixture) as server:
