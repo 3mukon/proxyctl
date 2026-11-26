@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-let version = "0.1.2"
+let version = "0.2.0"
 let tty = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
 let color = tty && ProcessInfo.processInfo.environment["NO_COLOR"] == nil && ProcessInfo.processInfo.environment["TERM"] != "dumb"
 umask(0o077)
