@@ -1380,12 +1380,19 @@ def verify_catch_all(bundle, scratch, primary, upstream):
             "webchannel-alkalimakersuite-pa.clients6.google.com",
             "alkalimakersuiteapplets.pa.clients6.google.com", "alkalimakersuiteapplets.pa.googleapis.com",
             "generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "cloudaicompanion.googleapis.com",
+            "aicode.googleapis.com", "daily-cloudcode-pa.googleapis.com",
+            "businessaicode.googleapis.com", "businessaicode.us.rep.googleapis.com",
+            "businessaicode.eu.rep.googleapis.com", "businessaicode.mtls.googleapis.com",
+            "antigravity.google", "antigravity.google.com", "antigravity-unleash.goog", "docs.antigravity.google",
+            "antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+            "antigravity-hub-auto-updater-974169037036.us-central1.run.app",
         )
         for host in gemini_hosts:
             assert fetch(f"http://{host}/").stdout == primary.identity, host
         for host in ("www.google.com", "www.gstatic.com", "accounts.google.com", "oauth2.googleapis.com",
-                     "aiplatform.googleapis.com", "www.youtube.com"):
-            assert fetch(f"http://{host}/").stdout == upstream.identity
+                     "aiplatform.googleapis.com", "www.youtube.com", "play.googleapis.com", "www.googleapis.com",
+                     "lh3.googleusercontent.com", "unrelated.us-central1.run.app"):
+            assert fetch(f"http://{host}/").stdout == upstream.identity, host
         assert fetch("http://api.openai.com/").stdout == upstream.identity
         assert fetch("http://api.anthropic.com/").stdout == primary.identity
         assert fetch("http://api.renamed.test/").stdout == primary.identity

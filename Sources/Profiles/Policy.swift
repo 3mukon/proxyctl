@@ -9,10 +9,12 @@ struct RoutingPolicy: Codable, Equatable {
     func revision() throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        // An unedited, disabled Gemini preset has no effect on deployments that predate it.
+        // An inactive stock Gemini preset is equivalent to profiles that predate the preset.
         let inactiveGemini = RuleCollection.preset(.gemini)
+        var originalInactiveGemini = inactiveGemini
+        originalInactiveGemini.domains = Preset.originalGeminiDomains
         var comparable = self
-        comparable.collections.removeAll { $0 == inactiveGemini }
+        comparable.collections.removeAll { $0 == inactiveGemini || $0 == originalInactiveGemini }
         return try SHA256.hash(data: encoder.encode(comparable)).map { String(format: "%02x", $0) }.joined()
     }
 }

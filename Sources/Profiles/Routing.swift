@@ -11,6 +11,17 @@ enum Preset: String, CaseIterable, Codable {
     case openai
     case gemini
 
+    static let originalGeminiDomains = [
+        "gemini.google.com", "gemini.google", "bard.google.com", "gemini.gstatic.com",
+        "geminiweb-pa.clients6.google.com",
+        "robinfrontend-pa.googleapis.com", "webchannel-robinfrontend-pa.googleapis.com",
+        "robinfrontend-pa.mtls.googleapis.com", "webchannel-robinfrontend-pa.mtls.googleapis.com",
+        "aistudio.google.com", "makersuite.google.com", "alkalimakersuite-pa.clients6.google.com",
+        "webchannel-alkalimakersuite-pa.clients6.google.com",
+        "alkalimakersuiteapplets.pa.clients6.google.com", "alkalimakersuiteapplets.pa.googleapis.com",
+        "generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "cloudaicompanion.googleapis.com"
+    ]
+
     var domains: [String] {
         switch self {
         case .claude:
@@ -18,15 +29,13 @@ enum Preset: String, CaseIterable, Codable {
         case .openai:
             return ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "oaistatsig.com", "openaimerge.com", "sora.com"]
         case .gemini:
-            return [
-                "gemini.google.com", "gemini.google", "bard.google.com", "gemini.gstatic.com",
-                "geminiweb-pa.clients6.google.com",
-                "robinfrontend-pa.googleapis.com", "webchannel-robinfrontend-pa.googleapis.com",
-                "robinfrontend-pa.mtls.googleapis.com", "webchannel-robinfrontend-pa.mtls.googleapis.com",
-                "aistudio.google.com", "makersuite.google.com", "alkalimakersuite-pa.clients6.google.com",
-                "webchannel-alkalimakersuite-pa.clients6.google.com",
-                "alkalimakersuiteapplets.pa.clients6.google.com", "alkalimakersuiteapplets.pa.googleapis.com",
-                "generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "cloudaicompanion.googleapis.com"
+            return Self.originalGeminiDomains + [
+                "aicode.googleapis.com", "daily-cloudcode-pa.googleapis.com",
+                "businessaicode.googleapis.com", "businessaicode.us.rep.googleapis.com",
+                "businessaicode.eu.rep.googleapis.com", "businessaicode.mtls.googleapis.com",
+                "antigravity.google", "antigravity.google.com", "antigravity-unleash.goog",
+                "antigravity-cli-auto-updater-974169037036.us-central1.run.app",
+                "antigravity-hub-auto-updater-974169037036.us-central1.run.app"
             ]
         }
     }

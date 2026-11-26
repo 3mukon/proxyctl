@@ -36,6 +36,19 @@ struct RoutingUpdateTests {
         let upgradedRevision = try oldProfile.routing.policy.revision()
         precondition(upgradedRevision == previousRevision)
 
+        var originalGemini = gemini
+        originalGemini.domains = Preset.originalGeminiDomains
+        var originalProfile = installed
+        var originalRoute = oldRoute
+        originalRoute["rule_set"] = definitions.map {
+            ($0["tag"] as? String) == gemini.tag ? originalGemini.definition : $0
+        }
+        originalProfile["route"] = originalRoute
+        let originalPolicy = try ManagedProfile(originalProfile, system: true).routing.policy
+        precondition(originalPolicy.collections.last == originalGemini)
+        let originalRevision = try originalPolicy.revision()
+        precondition(originalRevision == previousRevision)
+
         var collision = installed
         let custom = RuleCollection(name: "Gemini", target: .direct, enabled: true, domains: ["custom.test"], networks: [])
         oldRoute["rule_set"] = oldDefinitions + [custom.definition]
