@@ -22,6 +22,13 @@ struct Engine {
         profile = try ManagedProfile(loadObject(localData(paths.config)), system: system)
     }
 
+    func verifyLoopbackStart() throws {
+        guard portAvailable(profile.port), portAvailable(profile.controllerPort) else {
+            throw UserError(localized("回环端口已被占用或不可绑定。先关掉同一个 Proxyctl 预览，或另选端口。", "A loopback port is unavailable. Stop the current preview or choose another port."))
+        }
+        try paths.coreCheck(paths.config)
+    }
+
     func requireListener() throws {
         guard isCoreListener(port: profile.controllerPort, core: paths.core) else {
             let status = commandExample("status")
@@ -150,137 +157,4 @@ func withBoundPort<T>(_ port: Int, _ action: (Int32) throws -> T) throws -> T {
     }
     guard bound else { throw UserError(localized("无法绑定回环端口。", "Could not bind the loopback port.")) }
     return try action(descriptor)
-}
-
-private func parentPID(_ child: Int) -> Int? {
-    guard let pid = pid_t(exactly: child) else { return nil }
-    var process = proc_bsdinfo()
-    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &process, size) == size else { return nil }
-    return Int(process.pbi_ppid)
-}
-
-struct SystemService {
-    let paths: Paths
-
-    var user: String { NSUserName() }
-    var arguments: [String] { [serviceDriver, "--state-dir", paths.state.path, "_loopback"] }
-    private var legacyArguments: [String] { [serviceCore, "-D", paths.state.path, "run", "-c", paths.config.path] }
-    var installed: Bool { FileManager.default.fileExists(atPath: serviceJob) }
-
-    func manifest() -> [String: Any] {
-        ["Label": serviceLabel, "ProgramArguments": arguments, "UserName": user,
-         "RunAtLoad": true, "KeepAlive": true, "ThrottleInterval": 10,
-         "Umask": 0o077, "WorkingDirectory": paths.state.path]
-    }
-
-    private func requireDefaultState() throws {
-        guard getuid() != 0, paths.state == (try Paths()).state else {
-            throw UserError("请用普通登录账号和默认配置目录运行 service，macOS 会单独请求管理员认证。")
-        }
-        try paths.ensureState()
-    }
-
-    private func priv(_ executable: String, _ args: [String]) throws {
-        guard isatty(STDIN_FILENO) == 1 || isatty(STDERR_FILENO) == 1 else {
-            throw UserError("这项操作需要在终端完成管理员认证。")
-        }
-        try checkedStatus(runForeground("/usr/bin/sudo", [executable] + args))
-    }
-
-    private func isLegacyJob() throws -> Bool {
-        var file = stat()
-        let dict = (try? PropertyListSerialization.propertyList(from: localData(URL(fileURLWithPath: serviceJob)), options: [], format: nil)) as? [String: Any]
-        guard lstat(serviceJob, &file) == 0, file.st_uid == 0, file.st_mode & S_IFMT == S_IFREG,
-              dict?["Label"] as? String == serviceLabel, dict?["UserName"] as? String == user,
-              let argv = dict?["ProgramArguments"] as? [String],
-              argv == arguments || argv == legacyArguments else {
-            throw UserError("此服务没有由当前账号的 Proxyctl 安装，或注册文件已改变。")
-        }
-        return argv == legacyArguments
-    }
-
-    func verifyStart(_ profile: ManagedProfile) throws {
-        guard portAvailable(profile.port), portAvailable(profile.controllerPort) else {
-            throw UserError(localized("回环端口已被占用或不可绑定。先关掉同一个 Proxyctl 预览，或另选端口。", "A loopback port is unavailable. Stop the current preview or choose another port."))
-        }
-        try paths.coreCheck(paths.config)
-    }
-
-    func start() throws {
-        try requireDefaultState()
-        let legacy = try isLegacyJob()
-        if localJobPID(serviceLabel) != nil {
-            _ = try Engine(paths).current()
-            return
-        }
-        let profile = try upgradeLoopbackProfile(paths)
-        let engine = try Engine(paths)
-        try verifyStart(profile)
-        try priv("/bin/launchctl", ["bootstrap", "system", serviceJob])
-        for _ in 0..<24 {
-            if let job = localJobPID(serviceLabel), let listener = listenerPID(port: profile.port),
-               listenerPID(port: profile.controllerPort) == listener,
-               legacy ? listener == job : parentPID(listener) == job,
-               (try? engine.current()) != nil { return }
-            usleep(200_000)
-        }
-        try priv("/bin/launchctl", ["bootout", "system/\(serviceLabel)"])
-        throw UserError("本地代理未通过就绪检查，已卸载这次启动的服务。请查看 proxyctl logs。")
-    }
-
-    func install() throws {
-        try requireDefaultState()
-        var previous: Data?
-        if installed {
-            if try !isLegacyJob() { try start(); return }
-            previous = try localData(URL(fileURLWithPath: serviceJob))
-            try stop()
-        }
-        let profile = try upgradeLoopbackProfile(paths)
-        try verifyStart(profile)
-        guard let driver = Bundle.main.executableURL?.resolvingSymlinksInPath() else {
-            throw UserError(localized("无法定位 CLI 安装目录。", "Could not locate the CLI installation."))
-        }
-        let job = paths.state.appendingPathComponent("service-\(UUID().uuidString).plist")
-        defer { try? FileManager.default.removeItem(at: job) }
-        try savePrivate(PropertyListSerialization.data(fromPropertyList: manifest(), format: .xml, options: 0), to: job)
-        try priv("/usr/bin/install", ["-d", "-o", "root", "-g", "wheel", "-m", "755", serviceBase])
-        try priv("/usr/bin/install", ["-o", "root", "-g", "wheel", "-m", "755", paths.core.path, serviceCore])
-        try priv("/usr/bin/install", ["-o", "root", "-g", "wheel", "-m", "755", driver.path, serviceDriver])
-        try priv("/usr/bin/install", ["-o", "root", "-g", "wheel", "-m", "644", job.path, serviceJob])
-        do {
-            try start()
-        } catch {
-            let failure = error
-            if let previous {
-                try stop()
-                try savePrivate(previous, to: job)
-                try priv("/usr/bin/install", ["-o", "root", "-g", "wheel", "-m", "644", job.path, serviceJob])
-                try start()
-            } else {
-                try remove()
-            }
-            throw failure
-        }
-    }
-
-    func stop() throws {
-        try requireDefaultState()
-        _ = try isLegacyJob()
-        let target = "system/\(serviceLabel)"
-        if try run("/bin/launchctl", ["print", target], quiet: true).status == 0 {
-            try priv("/bin/launchctl", ["bootout", target])
-            for _ in 0..<20 {
-                if try run("/bin/launchctl", ["print", target], quiet: true).status != 0 { return }
-                usleep(200_000)
-            }
-            throw UserError("服务仍在停止，请稍后检查状态。")
-        }
-    }
-
-    func remove() throws {
-        try stop()
-        try priv("/bin/rm", ["-f", serviceJob, serviceCore, serviceDriver])
-    }
 }

@@ -8,28 +8,25 @@ let fakeDNS = "proxyctl-proxy-addresses"
 
 enum Preset: String, CaseIterable, Codable {
     case claude
-    case openai
+    case gpt
     case gemini
-
-    static let originalGeminiDomains = [
-        "gemini.google.com", "gemini.google", "bard.google.com", "gemini.gstatic.com",
-        "geminiweb-pa.clients6.google.com",
-        "robinfrontend-pa.googleapis.com", "webchannel-robinfrontend-pa.googleapis.com",
-        "robinfrontend-pa.mtls.googleapis.com", "webchannel-robinfrontend-pa.mtls.googleapis.com",
-        "aistudio.google.com", "makersuite.google.com", "alkalimakersuite-pa.clients6.google.com",
-        "webchannel-alkalimakersuite-pa.clients6.google.com",
-        "alkalimakersuiteapplets.pa.clients6.google.com", "alkalimakersuiteapplets.pa.googleapis.com",
-        "generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "cloudaicompanion.googleapis.com"
-    ]
 
     var domains: [String] {
         switch self {
         case .claude:
             return ["anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com", "anthropicusercontent.com"]
-        case .openai:
+        case .gpt:
             return ["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "oaistatsig.com", "openaimerge.com", "sora.com"]
         case .gemini:
-            return Self.originalGeminiDomains + [
+            return [
+                "gemini.google.com", "gemini.google", "bard.google.com", "gemini.gstatic.com",
+                "geminiweb-pa.clients6.google.com",
+                "robinfrontend-pa.googleapis.com", "webchannel-robinfrontend-pa.googleapis.com",
+                "robinfrontend-pa.mtls.googleapis.com", "webchannel-robinfrontend-pa.mtls.googleapis.com",
+                "aistudio.google.com", "makersuite.google.com", "alkalimakersuite-pa.clients6.google.com",
+                "webchannel-alkalimakersuite-pa.clients6.google.com",
+                "alkalimakersuiteapplets.pa.clients6.google.com", "alkalimakersuiteapplets.pa.googleapis.com",
+                "generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "cloudaicompanion.googleapis.com",
                 "aicode.googleapis.com", "daily-cloudcode-pa.googleapis.com",
                 "businessaicode.googleapis.com", "businessaicode.us.rep.googleapis.com",
                 "businessaicode.eu.rep.googleapis.com", "businessaicode.mtls.googleapis.com",
@@ -48,7 +45,6 @@ struct Routing: Equatable {
     var rulesID: UUID?
     var ruleNodes: [String] = []
     var ruleGroups: [String] = []
-    var explicitDefault = false
 
     var groupNames: [String] { groups.map(\.name) }
     var presets: [Preset] { collections.filter(\.enabled).compactMap { Preset(rawValue: $0.name) } }
@@ -68,27 +64,21 @@ struct Routing: Equatable {
     init(_ raw: [String: Any], nodeNames: [String]) throws {
         let route = raw["route"] as? [String: Any] ?? [:]
         groups = try ProxyGroup.decode(raw["outbounds"] as? [[String: Any]] ?? [], nodeNames: nodeNames)
-        let targets = RuleFiles.targets(nodeNames, groupNames: groups.map(\.name), hasUpstream: true)
+        let groupNames = groups.map(\.name)
+        let targets = RuleFiles.targets(nodeNames, groupNames: groupNames, hasUpstream: true)
         guard let fallback = targets.first(where: { $0.outbound == (route["final"] as? String) }) else {
             throw UserError(localized("无法识别当前配置的默认出站。", "The default outbound could not be recognized."))
         }
-        let rules = route["rules"] as? [[String: Any]] ?? []
-        let sets = route["rule_set"] as? [[String: Any]] ?? []
-        let layout = try RuleFiles.layout(in: route, nodeNames: nodeNames, groupNames: groups.map(\.name))
+        guard let rules = route["rules"] as? [[String: Any]],
+              let sets = route["rule_set"] as? [[String: Any]] else { throw RuleCollection.invalid }
+        let hasUpstream = (raw["outbounds"] as? [[String: Any]])?.contains { $0["tag"] as? String == upstreamTag } == true
         self.fallback = fallback
-        self.rulesID = layout?.id
-        self.ruleNodes = layout?.nodeNames ?? []
-        self.ruleGroups = layout?.groupNames ?? []
-        self.explicitDefault = sets.contains { $0["tag"] as? String == RuleCollection.fallbackMarker }
-        let parsed = try RuleCollection.decode(sets, routes: rules, targets: targets)
-        if parsed.isEmpty {
-            let selected = Preset.allCases.filter { preset in
-                rules.contains { $0["domain_suffix"] as? [String] == preset.domains && $0["outbound"] as? String == selectorTag }
-            }
-            collections = RuleCollection.defaults(selected)
-        } else {
-            collections = parsed
+        rulesID = try RuleFiles.layout(in: sets, nodeNames: nodeNames, groupNames: groupNames, hasUpstream: hasUpstream)
+        if rulesID != nil {
+            ruleNodes = nodeNames
+            ruleGroups = groupNames
         }
+        collections = try RuleCollection.decode(sets, routes: rules, targets: targets)
     }
 
     func ruleFiles(in state: URL) -> RuleFiles? {
@@ -155,9 +145,6 @@ struct Routing: Equatable {
             "default_domain_resolver": directDNS, "auto_detect_interface": system
         ]
         var definitions = collections.map(\.definition)
-        if explicitDefault {
-            definitions.append(["type": "inline", "tag": RuleCollection.fallbackMarker, "rules": [RuleCollection.emptyEntry]])
-        }
         if let rulesID { definitions += RuleFiles.config(rulesID, targets: targets) }
         route["rule_set"] = definitions
         config["route"] = route

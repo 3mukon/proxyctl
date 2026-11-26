@@ -56,10 +56,6 @@ link_command() {
 }
 
 link_command proxyctl
-if [ -L "$bin/sbctl" ] && [ "$(/usr/bin/readlink "$bin/sbctl")" = "$store/0.1.0/bin/proxyctl" ]; then
-    rm "$bin/sbctl"
-fi
-
 case ":$PATH:" in
     *":$bin:"*) ;;
     *)

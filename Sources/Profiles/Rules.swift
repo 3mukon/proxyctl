@@ -238,25 +238,18 @@ struct RuleFiles {
         }
     }
 
-    static func layout(in route: [String: Any], nodeNames: [String], groupNames: [String]) throws -> (id: UUID, nodeNames: [String], groupNames: [String])? {
-        guard let sets = route["rule_set"] else { return nil }
-        let invalid = UserError(localized("无法识别本机规则集。", "The local rule sets could not be identified."))
-        guard let definitions = sets as? [[String: Any]] else { throw invalid }
+    static func layout(in definitions: [[String: Any]], nodeNames: [String], groupNames: [String],
+                       hasUpstream: Bool) throws -> UUID? {
         let local = definitions.filter { $0["type"] as? String == "local" }
         if local.isEmpty { return nil }
         guard let files = local as? [[String: String]],
               let path = files.first?["path"],
               let directory = path.split(separator: "/").first, directory.hasPrefix("rules-"),
-              let id = UUID(uuidString: String(directory.dropFirst(6))) else { throw invalid }
-        for names in [nodeNames, []] {
-            for groups in [groupNames, []] {
-                if files == config(id, targets: targets(names, groupNames: groups, hasUpstream: false)) ||
-                    files == config(id, targets: targets(names, groupNames: groups, hasUpstream: true)) {
-                    return (id, names, groups)
-                }
-            }
+              let id = UUID(uuidString: String(directory.dropFirst(6))),
+              files == config(id, targets: targets(nodeNames, groupNames: groupNames, hasUpstream: hasUpstream)) else {
+            throw UserError(localized("无法识别本机规则集。", "The local rule sets could not be identified."))
         }
-        throw invalid
+        return id
     }
 
     private struct Source: Codable {

@@ -17,7 +17,6 @@ struct SystemProfile {
         let managed = try ManagedProfile(preview)
         let source = try Profile(preview)
         var routing = managed.routing
-        routing.fallback = routing.systemPolicy.fallback
         if let rulesID {
             routing.rulesID = rulesID
             routing.ruleNodes = managed.nodes.map(\.name)

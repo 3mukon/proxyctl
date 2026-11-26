@@ -50,11 +50,6 @@ func selectInterfaceLanguage(_ language: InterfaceLanguage, paths: Paths) throws
     interfaceLanguage = language
 }
 
-let serviceLabel = "local.proxyctl.sing-box"
-let serviceJob = "/Library/LaunchDaemons/\(serviceLabel).plist"
-let serviceBase = "/Library/Application Support/Proxyctl Engine"
-let serviceCore = "\(serviceBase)/sing-box"
-let serviceDriver = "\(serviceBase)/proxyctl"
 let selectorTag = "proxyctl-selected"
 
 struct Paths {
@@ -168,10 +163,8 @@ func isCoreListener(port: Int, core: URL) -> Bool {
     guard let pid = listenerPID(port: port), let executable = executablePath(of: pid) else { return false }
     var actual = stat()
     guard stat(executable, &actual) == 0 else { return false }
-    return [core.path, serviceCore].contains { path in
-        var expected = stat()
-        return stat(path, &expected) == 0 && actual.st_dev == expected.st_dev && actual.st_ino == expected.st_ino
-    }
+    var expected = stat()
+    return stat(core.path, &expected) == 0 && actual.st_dev == expected.st_dev && actual.st_ino == expected.st_ino
 }
 
 func ruleChangeMessage(_ change: RuleChange) -> String {

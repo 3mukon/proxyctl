@@ -39,7 +39,9 @@ func editLocalPolicy(_ paths: Paths, change: (inout Routing, ManagedProfile) thr
 }
 
 func managePresets(_ args: [String], _ paths: Paths) throws {
-    let collections = (try? ManagedProfile(paths.config).routing.collections) ?? RuleCollection.defaults([])
+    let collections = FileManager.default.fileExists(atPath: paths.config.path)
+        ? try ManagedProfile(paths.config).routing.collections
+        : RuleCollection.defaults([])
     if args.isEmpty || args == ["--json"] {
         if args == ["--json"] { try printJSON(collections); return }
         for group in collections {

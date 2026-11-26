@@ -169,10 +169,11 @@ struct ManagedProfile {
               validPorts(port, controllerPort), let secret = api?["secret"] as? String,
               secret.count == 72, secret.unicodeScalars.allSatisfy(secretChars.contains),
               raw["endpoints"] == nil, raw["services"] == nil,
+              profile.outbounds.contains(where: { $0["tag"] as? String == directTag && $0["type"] as? String == "direct" }),
               let group = profile.outbounds.first(where: { $0["tag"] as? String == selectorTag }),
               group["type"] as? String == "selector", let order = group["outbounds"] as? [String],
               try profile.order(order) == order else {
-            throw UserError(localized("本机配置不是 Proxyctl 生成的回环代理。请重新运行 setup。", "Import the nodes again to create a Proxyctl loopback profile."))
+            throw UserError(localized("本机配置不是 Proxyctl 生成的回环代理。请重新导入节点。", "Import the nodes again to create a Proxyctl loopback profile."))
         }
         nodes = profile.nodes
         self.order = order
@@ -269,28 +270,7 @@ func writeRoutingProfile(_ original: [String: Any], routing: Routing, paths: Pat
     let source = try Profile(original)
     return try writeRoutingProfile(routing, nodes: source.nodes, paths: paths, requireFreePorts: false) { routing in
         var config = original
-        if !source.outbounds.contains(where: { $0["tag"] as? String == directTag }) {
-            config["outbounds"] = source.outbounds + [["type": "direct", "tag": directTag]]
-        }
         try routing.apply(to: &config)
         return config
     }
-}
-
-func upgradeLoopbackProfile(_ paths: Paths) throws -> ManagedProfile {
-    var config = try loadObject(localData(paths.config))
-    let profile = try ManagedProfile(config)
-    guard var outbounds = config["outbounds"] as? [[String: Any]],
-          let selector = outbounds.firstIndex(where: { $0["tag"] as? String == selectorTag }) else { return profile }
-    let interrupts = outbounds[selector]["interrupt_exist_connections"] as? Bool ?? false
-    if interrupts {
-        outbounds[selector]["interrupt_exist_connections"] = false
-        config["outbounds"] = outbounds
-    }
-    if profile.routing.rulesID == nil || profile.routing.ruleNodes != profile.nodes.map(\.name) ||
-        profile.routing.ruleGroups != profile.routing.groupNames || interrupts {
-        try writeRoutingProfile(config, routing: profile.routing, paths: paths)
-        return try ManagedProfile(paths.config)
-    }
-    return profile
 }

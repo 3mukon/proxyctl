@@ -150,7 +150,7 @@ struct ShareLink {
         case "ss":
             decoded = try Self.shadowsocks(value, body: body)
         case "vmess" where !body.contains("@"):
-            decoded = try Self.legacyVMess(body)
+            decoded = try Self.vmessJSON(body)
         case "vless", "vmess", "trojan", "hysteria", "hysteria2", "hy2", "tuic", "anytls",
              "socks", "socks4", "socks4a", "socks5", "http", "https", "ssh", "snell",
              "naive+https", "naive+quic":
@@ -325,7 +325,7 @@ struct ShareLink {
         return (outbound, address.name)
     }
 
-    private static func legacyVMess(_ body: String) throws -> ([String: Any], String?) {
+    private static func vmessJSON(_ body: String) throws -> ([String: Any], String?) {
         let token = body.prefix(while: { $0 != "#" })
         guard let data = base64(String(token)),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { throw LinkError.invalid }

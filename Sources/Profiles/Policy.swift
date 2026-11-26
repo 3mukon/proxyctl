@@ -9,24 +9,12 @@ struct RoutingPolicy: Codable, Equatable {
     func revision() throws -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        // An inactive stock Gemini preset is equivalent to profiles that predate the preset.
-        let inactiveGemini = RuleCollection.preset(.gemini)
-        var originalInactiveGemini = inactiveGemini
-        originalInactiveGemini.domains = Preset.originalGeminiDomains
-        var comparable = self
-        comparable.collections.removeAll { $0 == inactiveGemini || $0 == originalInactiveGemini }
-        return try SHA256.hash(data: encoder.encode(comparable)).map { String(format: "%02x", $0) }.joined()
+        return try SHA256.hash(data: encoder.encode(self)).map { String(format: "%02x", $0) }.joined()
     }
 }
 
 extension Routing {
     var policy: RoutingPolicy { RoutingPolicy(collections: collections, fallback: fallback, groups: groups.isEmpty ? nil : groups) }
-
-    var systemPolicy: RoutingPolicy {
-        var effective = policy
-        if fallback == .proxy && !explicitDefault { effective.fallback = .direct }
-        return effective
-    }
 }
 
 struct RoutingUpdate: Codable {
@@ -35,7 +23,7 @@ struct RoutingUpdate: Codable {
     let defaultOrder: [String]?
 
     init(_ profile: ManagedProfile, includeDefaultOrder: Bool = false) throws {
-        policy = profile.routing.systemPolicy
+        policy = profile.routing.policy
         upstreamRevision = try Self.upstreamRevision(profile.upstream)
         defaultOrder = includeDefaultOrder ? profile.order : nil
     }
@@ -47,7 +35,6 @@ struct RoutingUpdate: Codable {
         routing.fallback = policy.fallback
         routing.groups = policy.groups ?? []
         if routing.rulesID != nil { routing.ruleGroups = routing.groupNames }
-        routing.explicitDefault = true
         if routing.referencesUpstream {
             guard let upstreamRevision, upstreamRevision == (try Self.upstreamRevision(installed.upstream)) else {
                 throw UserError(localized("本机的外部代理地址尚未应用到系统配置。请先部署该地址。",

@@ -22,17 +22,15 @@ struct ProtectionRecord: Codable {
     var deadline: TimeInterval?
     var bootID: String?
     var uplink: Uplink?
-    var verified: Bool?
-    var sourceRevision: String?
-
-    var isVerified: Bool { verified ?? (phase == .protected) }
+    var verified = false
+    let sourceRevision: String
 
     func expired(bootID: String, now: TimeInterval) -> Bool {
         phase.isTrial && (self.bootID != bootID || (deadline ?? 0) <= now)
     }
 
     func resumedAtBoot(_ boot: String, enabled: Bool) -> ProtectionRecord? {
-        guard enabled, isVerified, bootID != boot else { return nil }
+        guard enabled, verified, bootID != boot else { return nil }
         switch phase {
         case .prepared, .protected, .starting:
             return ProtectionRecord(phase: .protected, bootID: boot, verified: true, sourceRevision: sourceRevision)

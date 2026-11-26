@@ -11,17 +11,13 @@ private func showRules(_ args: [String], profile: ManagedProfile, paths: Paths) 
                    fallback: profile.routing.fallback)
 }
 
-func manageUpstream(_ args: [String], _ paths: Paths, offerDefault: Bool = true) throws {
+func manageUpstream(_ args: [String], _ paths: Paths) throws {
     if args.isEmpty && tty {
         _ = try ManagedProfile(paths.config)
         print(localized("输入独立代理的地址，例如 socks5://host:1080。回车返回。",
                         "Enter an independent proxy URL, such as socks5://host:1080. Enter goes back."))
         guard let url = readLine(), !url.isEmpty else { return }
         _ = try Upstream(url: url)
-        if !offerDefault {
-            try manageUpstream([url], paths)
-            return
-        }
         print(localized("  1. 将其余全部交给此外部代理\n  2. 仅保存代理地址",
                         "  1. Use this external proxy for everything else\n  2. Save the endpoint only"))
         guard let choice = readLine(), !choice.isEmpty else { return }
@@ -36,7 +32,7 @@ func manageUpstream(_ args: [String], _ paths: Paths, offerDefault: Bool = true)
             if let upstream = current.upstream {
                 print(upstream.addressLabel)
             } else { print(localized("外部出站未配置。", "No external upstream is configured.")) }
-            print(commandExample(offerDefault ? "rules upstream socks5://HOST:PORT|off" : "setup upstream socks5://HOST:PORT|off"))
+            print(commandExample("rules upstream socks5://HOST:PORT|off"))
             return
         }
         let asDefault = args.count == 2 && args.last == "--default"
@@ -62,7 +58,6 @@ func manageUpstream(_ args: [String], _ paths: Paths, offerDefault: Bool = true)
         var routing = current.routing
         if asDefault {
             routing.fallback = .upstream
-            routing.explicitDefault = true
         }
         try writeRoutingProfile(config, routing: routing, paths: paths)
         print(localized("外部出站设置已保存。", "External upstream settings saved."))
@@ -75,19 +70,15 @@ func manageUpstream(_ args: [String], _ paths: Paths, offerDefault: Bool = true)
 }
 
 private func applyLocalRules(_ args: [String], paths: Paths) throws {
-    let config = try loadObject(localData(paths.config))
-    let profile = try ManagedProfile(config)
+    let profile = try ManagedProfile(paths.config)
     if args.isEmpty || args == ["--json"] {
         try showRules(args, profile: profile, paths: paths)
         return
     }
     let change = try RuleChange(args, hasUpstream: profile.upstream != nil, nodeNames: profile.nodes.map(\.name),
                                 groupNames: profile.routing.groupNames)
-    if let files = profile.routing.ruleFiles(in: paths.state), files.supports(change.rule.target) {
-        try files.update(change)
-    } else if change.add {
-        try writeRoutingProfile(config, routing: profile.routing, paths: paths).update(change)
-    }
+    guard let files = profile.routing.ruleFiles(in: paths.state) else { throw ruleUsage() }
+    try files.update(change)
     print(ruleChangeMessage(change))
 }
 
@@ -119,7 +110,6 @@ private func manageDefault(_ args: [String], paths: Paths) throws {
     }
     let updated = try editLocalPolicy(paths) { routing, profile in
         routing.fallback = try target.resolved(in: profile.nodes.map(\.name), groups: routing.groupNames)
-        routing.explicitDefault = true
     }
     print(catchAllLine(updated.fallback))
 }

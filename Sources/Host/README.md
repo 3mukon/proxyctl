@@ -20,7 +20,7 @@ Callers decide node priority and render the interface.
 
 ## Public interface
 
-`Engine` queries, tests, and selects nodes. `SystemService` manages the loopback job. `ProtectedService` manages the TUN and watchdog jobs. It verifies a routing update after restarting the engine under PF. `RoutingRollback` keeps the previous configuration available until verification commits, allowing the watchdog to restore it after an interruption. `TunnelCheck` checks routes, reachability, and whether a loopback upstream is supplied by another packet tunnel. `PacketFilter` owns its anchor and enable reference. `Host.swift` provides file utilities. `Command.swift` runs child processes and keeps interactive administrator commands attached to the foreground terminal.
+`Engine` queries, tests, and selects nodes. `ProtectedService` manages the TUN and watchdog jobs. It verifies a routing update after restarting the engine under PF. `RoutingRollback` keeps the previous configuration available until verification commits, allowing the watchdog to restore it after an interruption. `TunnelCheck` checks routes, reachability, and whether a loopback upstream is supplied by another packet tunnel. `PacketFilter` owns its anchor and enable reference. `Host.swift` provides file utilities. `Command.swift` runs child processes and keeps interactive administrator commands attached to the foreground terminal.
 
 Authenticated management commands use the current CLI with the installed system profile. They wait for the profile lock for up to 15 seconds before executing. The watchdog uses the root-owned driver and leaves a busy lock for its next scheduled check.
 

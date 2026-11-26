@@ -131,7 +131,7 @@ struct ProtectionLifecycleTests {
         try verifyPacketFilterRoot()
         verifyHTTPSProbe()
         try verifyOperationLock()
-        let unverified = ProtectionRecord(phase: .prepared, bootID: "prior")
+        let unverified = ProtectionRecord(phase: .prepared, bootID: "prior", sourceRevision: "revision")
         precondition(unverified.resumedAtBoot("new", enabled: true) == nil)
 
         let stopped = ProtectionRecord(phase: .prepared, bootID: "prior", verified: true, sourceRevision: "revision")
@@ -140,13 +140,13 @@ struct ProtectionLifecycleTests {
         precondition(stopped.resumedAtBoot("new", enabled: true)?.phase == .protected)
         precondition(stopped.resumedAtBoot("new", enabled: true)?.sourceRevision == "revision")
 
-        let running = ProtectionRecord(phase: .protected, bootID: "prior", verified: true)
+        let running = ProtectionRecord(phase: .protected, bootID: "prior", verified: true, sourceRevision: "revision")
         precondition(running.resumedAtBoot("new", enabled: true)?.phase == .protected)
         precondition(running.resumedAtBoot("prior", enabled: true) == nil)
         precondition(running.resumedAtBoot("new", enabled: false) == nil)
         precondition(!running.expired(bootID: "new", now: 500))
 
-        let starting = ProtectionRecord(phase: .starting, deadline: 90, bootID: "prior", verified: true)
+        let starting = ProtectionRecord(phase: .starting, deadline: 90, bootID: "prior", verified: true, sourceRevision: "revision")
         precondition(!starting.expired(bootID: "prior", now: 89))
         precondition(starting.expired(bootID: "prior", now: 90))
         precondition(starting.expired(bootID: "new", now: 1))
@@ -158,17 +158,12 @@ struct ProtectionLifecycleTests {
         }
         precondition(resumed.phase == .protected)
         precondition(resumed.bootID == "new")
-        precondition(resumed.isVerified)
+        precondition(resumed.verified)
         precondition(resumed.deadline == nil)
         precondition(!resumed.expired(bootID: "new", now: 500))
 
-        let trial = ProtectionRecord(phase: .firewallTrial, deadline: 100, bootID: "prior")
+        let trial = ProtectionRecord(phase: .firewallTrial, deadline: 100, bootID: "prior", sourceRevision: "revision")
         precondition(trial.resumedAtBoot("new", enabled: true) == nil)
         precondition(trial.expired(bootID: "new", now: 1))
-
-        let oldRecord = Data(#"{"phase":"protected"}"#.utf8)
-        let legacy = try JSONDecoder().decode(ProtectionRecord.self, from: oldRecord)
-        precondition(legacy.sourceRevision == nil)
-        precondition(legacy.resumedAtBoot("new", enabled: true)?.phase == .protected)
     }
 }

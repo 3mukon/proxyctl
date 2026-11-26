@@ -33,8 +33,7 @@ func protectedConsoleStatus(_ paths: Paths, _ status: ProtectionStatus?) -> Prot
 }
 
 func usesLivePolicy(_ status: ProtectionStatus?) -> Bool {
-    status?.phase == .protected && status?.engineRunning == true && status?.firewallLoaded == true &&
-        status?.routingRevision != nil
+    status?.phase == .protected && status?.engineRunning == true && status?.firewallLoaded == true
 }
 
 func changesPolicy(_ args: [String]) -> Bool {
@@ -65,7 +64,7 @@ func applyRoutingPolicy(_ profile: ManagedProfile, includeDefaultOrder: Bool = f
 
 func syncRoutingPolicy(_ profile: ManagedProfile, paths: Paths, includeDefaultOrder: Bool = false) throws {
     guard let system = protectedConsoleStatus(paths, ProtectedService.installedStatus()),
-          system.routingRevision != (try profile.routing.systemPolicy.revision()) ||
+          system.routingRevision != (try profile.routing.policy.revision()) ||
           (includeDefaultOrder && system.order != profile.order) else { return }
     guard usesLivePolicy(system) else { print(pendingPolicyMessage(system)); return }
     do {
@@ -92,7 +91,7 @@ func systemCaptureText(_ status: ProtectionStatus?) -> String {
 }
 
 func protectionPhaseText(_ status: ProtectionStatus) -> String {
-    if status.phase == .prepared && status.verified == true {
+    if status.phase == .prepared && status.verified {
         return localized("已验证，可以启动", "Verified and ready to start")
     }
     let names: [ProtectionPhase: String] = [
@@ -111,9 +110,8 @@ func systemStatusLines(_ status: ProtectionStatus) -> [String] {
     let firewall = status.firewallLoaded ? localized("已加载", "Loaded") : localized("未加载", "Not loaded")
     var lines = [systemCaptureText(status) + " · " + protectionPhaseText(status),
                  localized("独立 PF    ", "Independent PF ") + firewall]
-    if let boot = status.startsAtBoot {
-        lines.append(boot ? localized("开机自启   已启用", "Start at boot   On") : localized("开机自启   已停用", "Start at boot   Off"))
-    }
+    lines.append(status.startsAtBoot ? localized("开机自启   已启用", "Start at boot   On") :
+                 localized("开机自启   已停用", "Start at boot   Off"))
     if let node = status.selectedNode { lines.append(localized("系统节点   ", "System node    ") + terminalText(node)) }
     if let seconds = status.secondsLeft { lines.append(localized("回退倒计时  约 \(seconds) 秒", "Rollback in about \(seconds) seconds")) }
     if let error = status.lastError { lines.append(localized("诊断       ", "Diagnostics    ") + terminalText(error)) }
@@ -221,7 +219,7 @@ private func installSystem(_ submission: SystemSubmission, paths: Paths, activat
 
 private func usesInstalledProfile(_ installed: ProtectionStatus?, hasLocal: Bool) -> Bool {
     guard let installed else { return false }
-    return installed.phase != .prepared || !hasLocal || (installed.verified == true && installed.sourceRevision == nil)
+    return installed.phase != .prepared || !hasLocal
 }
 
 private func checkSystemStartup(_ paths: Paths, installed: ProtectionStatus?) throws {
@@ -247,22 +245,21 @@ private func startSystem(_ paths: Paths) throws {
         throw TunnelCheck.pauseVPN
     }
 
-    func startInstalled() throws {
-        if installed?.phase == .prepared { _ = try TunnelCheck.preflight() }
-        let revision = installed?.sourceRevision.map { [$0] } ?? []
-        try ProtectedService.asAdministrator(["system", "_start-installed"] + systemPresentation + revision,
+    func startInstalled(_ installed: ProtectionStatus) throws {
+        if installed.phase == .prepared { _ = try TunnelCheck.preflight() }
+        try ProtectedService.asAdministrator(["system", "_start-installed"] + systemPresentation + [installed.sourceRevision],
                                              executable: systemLauncher())
     }
 
-    if usesInstalledProfile(installed, hasLocal: hasLocal) {
-        try startInstalled()
+    if let installed, usesInstalledProfile(installed, hasLocal: hasLocal) {
+        try startInstalled(installed)
         return
     }
     guard hasLocal else { throw missingSystemProfile }
     try paths.locked {
         let submission = try systemSource(paths)
-        if installed?.verified == true, installed?.sourceRevision == (try submission.sourceRevision()) {
-            try startInstalled()
+        if let installed, installed.verified, installed.sourceRevision == (try submission.sourceRevision()) {
+            try startInstalled(installed)
         } else {
             _ = try TunnelCheck.preflight()
             try installSystem(submission, paths: paths, activate: true)
@@ -302,9 +299,9 @@ func system(_ args: [String], _ paths: Paths) throws {
         return
     }
     if action == "_start-installed" && geteuid() == 0 {
-        guard (2...3).contains(rest.count) else { throw UserError("Invalid installed startup arguments.") }
+        guard rest.count == 3 else { throw UserError("Invalid installed startup arguments.") }
         try loadSystemPresentation(Array(rest.prefix(2)))
-        try ProtectedService().startExisting(expectedRevision: rest.count == 3 ? rest[2] : nil)
+        try ProtectedService().startExisting(expectedRevision: rest[2])
         return
     }
     if action == "_apply-routing" && geteuid() == 0 {

@@ -11,15 +11,15 @@ struct ProtectionStatus: Codable {
     let nodes: [Node]
     let order: [String]
     let lastError: String?
-    let hasUpstream: Bool?
-    let startsAtBoot: Bool?
-    let verified: Bool?
-    let nodeRuleTargets: [String]?
-    let groupRuleTargets: [String]?
-    let sourceRevision: String?
-    let fallback: RuleTarget?
-    let routingRevision: String?
-    let groups: [ProxyGroupStatus]?
+    let hasUpstream: Bool
+    let startsAtBoot: Bool
+    let verified: Bool
+    let nodeRuleTargets: [String]
+    let groupRuleTargets: [String]
+    let sourceRevision: String
+    let fallback: RuleTarget
+    let routingRevision: String
+    let groups: [ProxyGroupStatus]
 }
 
 struct ProtectedService {
@@ -113,11 +113,11 @@ struct ProtectedService {
                                        selectedNode: name, nodes: engine.profile.nodes,
                                        order: engine.profile.order, lastError: error,
                                        hasUpstream: engine.profile.upstream != nil, startsAtBoot: startsAtBoot,
-                                       verified: state.isVerified, nodeRuleTargets: engine.profile.routing.ruleNodes,
-                                       groupRuleTargets: engine.profile.routing.ruleGroups.isEmpty ? nil : engine.profile.routing.ruleGroups,
+                                       verified: state.verified, nodeRuleTargets: engine.profile.routing.ruleNodes,
+                                       groupRuleTargets: engine.profile.routing.ruleGroups,
                                        sourceRevision: state.sourceRevision, fallback: engine.profile.routing.fallback,
                                        routingRevision: try engine.profile.routing.policy.revision(),
-                                       groups: engine.profile.routing.groups.isEmpty ? nil : engine.groupStatus(running: running))
+                                       groups: engine.groupStatus(running: running))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(summary)
@@ -293,7 +293,7 @@ struct ProtectedService {
         let paths = try paths
         try paths.locked(waitingUpTo: Self.commandLockWait) {
             let state = try record()
-            guard state.phase == .protected, state.isVerified, filter.active(), jobLoaded(Self.guardLabel),
+            guard state.phase == .protected, state.verified, filter.active(), jobLoaded(Self.guardLabel),
                   TunnelCheck.routed, try !TunnelCheck.competingVPNActive() else {
                 throw UserError(localized("系统隧道和 PF 就绪后才能应用策略。",
                                           "The system tunnel and PF must be healthy to apply routing settings."))
@@ -490,10 +490,10 @@ struct ProtectedService {
         print(localized("系统代理与独立 PF 已启用。", "System proxy and independent PF are running."))
     }
 
-    func startExisting(expectedRevision: String? = nil) throws {
+    func startExisting(expectedRevision: String) throws {
         try secureState()
         try paths.locked(waitingUpTo: Self.commandLockWait) {
-            if let expectedRevision, try record().sourceRevision != expectedRevision {
+            if try record().sourceRevision != expectedRevision {
                 throw UserError(localized("系统配置已变化，请重新启动。", "The system profile changed. Run start again."))
             }
             try startDeployment()
@@ -503,7 +503,7 @@ struct ProtectedService {
     private func startDeployment() throws {
         let state = try record()
         if state.phase == .protected { try recoverRouting(restart: true) }
-        let needsTrial = state.phase == .prepared && !state.isVerified
+        let needsTrial = state.phase == .prepared && !state.verified
         if !needsTrial && state.phase != .tunnelTrial && state.phase != .firewallTrial {
             try start(state)
             print(localized("系统代理已启动。", "System proxy started."))
@@ -538,7 +538,7 @@ struct ProtectedService {
             try publish(running)
             return
         }
-        guard state.isVerified, state.phase == .prepared || state.phase == .protected,
+        guard state.verified, state.phase == .prepared || state.phase == .protected,
               !filter.hasTransaction, !jobLoaded(Self.coreLabel) else {
             throw UserError(localized("系统部署尚未完成清理，请先执行回退。",
                                       "The previous deployment is still present. Roll it back first."))
@@ -571,7 +571,7 @@ struct ProtectedService {
     private func stop(keepVerification: Bool) throws {
         let state = try record()
         let stopped = ProtectionRecord(phase: .prepared, bootID: (try? Self.bootID()) ?? state.bootID,
-                                       verified: keepVerification && state.isVerified, sourceRevision: state.sourceRevision)
+                                       verified: keepVerification && state.verified, sourceRevision: state.sourceRevision)
         if state.phase != .prepared || jobLoaded(Self.coreLabel) {
             var pending = stopped
             pending.phase = .rollingBack
@@ -607,7 +607,7 @@ struct ProtectedService {
         var state = try record()
         do {
             if state.phase == .rollingBack {
-                try stop(keepVerification: state.isVerified)
+                try stop(keepVerification: state.verified)
                 return
             }
             let boot = try Self.bootID()
@@ -617,7 +617,7 @@ struct ProtectedService {
                 state = resumed
             }
             if state.expired(bootID: boot, now: ProcessInfo.processInfo.systemUptime) {
-                try stop(keepVerification: state.isVerified)
+                try stop(keepVerification: state.verified)
                 return
             }
             if state.phase == .prepared {
@@ -645,7 +645,7 @@ struct ProtectedService {
     private func configureAutostart(_ enabled: Bool) throws {
         let state = try record()
         if enabled {
-            guard state.isVerified, state.phase == .prepared || state.phase == .protected else {
+            guard state.verified, state.phase == .prepared || state.phase == .protected else {
                 throw UserError(localized("请先完成系统试用与 PF 验收。", "Complete the system and PF trials before enabling autostart."))
             }
             try writeJob(Self.guardJob, label: Self.guardLabel, action: "_watch", interval: 4)

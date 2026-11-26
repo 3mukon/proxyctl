@@ -8,11 +8,11 @@ Download `proxyctl-<version>-macos-arm64.tar.gz` from [GitHub Releases](https://
 
 Use `/lang` to choose Simplified Chinese or English and `/quit` to leave the console. Both are in the daily command list.
 
-1. Copy a node link and choose `/nodes add`. For a sing-box client file, use `/nodes import` and select nodes in priority order. Both import methods enable the Claude, OpenAI, and Gemini presets for new profiles.
+1. Copy a node link and choose `/nodes add`. For a sing-box client file, use `/nodes import` and select nodes in priority order. Both import methods enable the Claude, GPT, and Gemini presets for new profiles.
 2. Choose `/check` to verify the first configured node before changing system routing.
 3. Use [`/system start`](docs/operations.md#start-the-system-proxy) to validate and start the system tunnel and firewall. Use `/status` to see whether they are running.
 
-Use `/groups edit` to set the default group's priority or create a group with its own members. Each group automatically uses its first reachable member. Claude, OpenAI, and Gemini initially follow the default group. Use `/presets route` or `/rules add` to select a group or a specific node. Unmatched traffic starts at DIRECT. Change its outbound with `/rules default`.
+Use `/groups edit` to set the default group's priority or create a group with its own members. Each group automatically uses its first reachable member. Claude, GPT, and Gemini initially follow the default group. Use `/presets route` or `/rules add` to select a group or a specific node. Unmatched traffic starts at DIRECT. Change its outbound with `/rules default`.
 
 ## Commands
 

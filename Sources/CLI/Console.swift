@@ -118,15 +118,6 @@ private func commandOptions(for command: String) -> [CommandChoice] {
                   help: localized("新建预设，编辑成员和出口，或删除自定义预设。",
                                   "Create a preset, edit its members and outbound, or delete a custom preset."))
         ]
-    case "setup":
-        return [
-            .init("import", localized("从 sing-box JSON 导入节点", "Import nodes from a sing-box JSON file"), ["setup", "import"],
-                  help: localized("从 sing-box JSON 导入节点，选择主备顺位或文件里的代理组。",
-                                  "Import nodes from sing-box JSON, then set their priority or select a proxy group from the file.")),
-            .init("upstream", localized("查看或编辑外部代理地址", "View or edit the external proxy address"), ["setup", "upstream"],
-                  help: localized("添加、修改或清除供规则、自定义预设或「其余全部」使用的 SOCKS5 或 HTTP(S) 地址。",
-                                  "Set, change, or clear the SOCKS5 or HTTP(S) address used by rules, custom presets, or unmatched traffic."))
-        ]
     case "system":
         return [
             .init("start", localized("验证并启动系统代理", "Verify and start the system proxy"), ["system", "start"],
@@ -156,7 +147,7 @@ private func commandOptions(for command: String) -> [CommandChoice] {
 }
 
 func isConsoleCommand(_ name: String) -> Bool {
-    ["preview", "setup"].contains(name) || commands.contains { $0.title == name }
+    name == "preview" || commands.contains { $0.title == name }
 }
 
 var consoleCommandList: String { commands.map { "/" + $0.title }.joined(separator: "  ") }
@@ -594,7 +585,7 @@ private final class TerminalConsole {
     }
 
     private var ruleUpstreamAvailable: Bool {
-        if let system = activeSystem { return system.hasUpstream == true }
+        if let system = activeSystem { return system.hasUpstream }
         return profile?.upstream != nil
     }
 
@@ -625,10 +616,6 @@ private final class TerminalConsole {
         // Optional subcommands only become completions once the draft starts typing their command word.
         let matches = suggestions.filter { $0.isValue || $0.arguments.count <= arguments.count }
         guard !matches.isEmpty else { return false }
-        if command == "setup", arguments.count == 2,
-           FileManager.default.fileExists(atPath: (arguments[1] as NSString).expandingTildeInPath) {
-            return false
-        }
         let ignoresValueCase = ["presets", "rules", "groups"].contains(command)
         return !matches.contains { choice in
             guard !choice.needsArgument else { return false }
@@ -661,7 +648,6 @@ private final class TerminalConsole {
         guard let (first, argument) = argumentContext else {
             let query = draft.text.dropFirst().split(whereSeparator: \.isWhitespace).first?.lowercased() ?? ""
             // Existing explicit commands remain usable without cluttering the menu.
-            if query == "setup" { return [CommandChoice("setup", "")] }
             return commands.filter { $0.title.hasPrefix(query) }
         }
         switch first {
@@ -683,8 +669,6 @@ private final class TerminalConsole {
             if let (action, tail) = nextArgument(argument), action == "node" {
                 return nodeChoices(profile?.nodes ?? [], matching: completionQuery(tail), command: [first, action])
             }
-        case "nodes" where argument == "group":
-            return [CommandChoice("group", localized("编辑默认代理组", "Edit the default proxy group"), ["nodes", "group"])]
         default: break
         }
         return commandOptions(for: first).filter { $0.title.hasPrefix(argument.lowercased()) }
@@ -712,8 +696,8 @@ private final class TerminalConsole {
                                    needsUpstreamAddress: profile.upstream == nil)
         case "add":
             guard let (value, query) = nextArgument(tail), let match = try? ruleValue(value) else { return [] }
-            let available = activeSystem.map { $0.nodeRuleTargets ?? [] } ?? profile?.nodes.map(\.name) ?? []
-            let groups = activeSystem.map { $0.groupRuleTargets ?? [] } ?? profile?.routing.groupNames ?? []
+            let available = activeSystem?.nodeRuleTargets ?? profile?.nodes.map(\.name) ?? []
+            let groups = activeSystem?.groupRuleTargets ?? profile?.routing.groupNames ?? []
             let targets = outboundOptions(nodeNames: available, groupNames: groups, hasUpstream: ruleUpstreamAvailable)
             return outboundChoices(targets, matching: query, command: ["rules", action, match])
         case "remove": return ruleRemovalChoices(tail)
@@ -1104,7 +1088,7 @@ private final class TerminalConsole {
         showResult("›  " + label)
         let ruleReport = arguments == ["rules"] || arguments == ["rules", "default"]
         let systemCommand = activeSystem != nil && (isProtectedConsoleCommand(arguments) || ruleReport)
-        let command = systemCommand && ruleReport ? ["rules"] : arguments
+        let command = systemCommand && ruleReport ? ["rules", "--json"] : arguments
         let invocation = ["--state-dir", paths.state.path] + (systemCommand ? ["system"] : []) + command
         do {
             let directSystemAction = try consoleSystemAction(arguments)
@@ -1126,7 +1110,9 @@ private final class TerminalConsole {
                 self.result.removeAll()
                 let lines = renderOutput(result.output, ink: result.status == 0 ? .normal : .warning)
                 refreshStatus()
-                if result.status == 0 && systemCommand && ruleReport && showSystemRules(lines) {
+                if result.status == 0, systemCommand, ruleReport, let system = activeSystem {
+                    let rules = try JSONDecoder().decode([CustomRule].self, from: result.output)
+                    showSystemRules(rules, system: system)
                     return
                 }
                 if lines.isEmpty {
@@ -1329,7 +1315,7 @@ private final class TerminalConsole {
         if let enabled = system?.startsAtBoot {
             boot = enabled ? localized("已启用", "On") : localized("已停用", "Off")
         } else {
-            boot = system == nil ? localized("未配置", "Not configured") : localized("未知", "Unknown")
+            boot = localized("未配置", "Not configured")
         }
         var rows = [[localized("全机接管", "System capture"), capture],
                     [localized("PF 防护", "PF protection"), firewall],
@@ -1342,7 +1328,7 @@ private final class TerminalConsole {
         }
         if system?.engineRunning != true && system?.firewallLoaded != true {
             rows.append([localized("本机状态", "Local status"), localServiceText(status.service)])
-            if let port = status.port, ["system", "preview"].contains(status.service) {
+            if let port = status.port, status.service == "preview" {
                 rows.append([localized("回环监听", "Loopback"), "127.0.0.1:\(port)"])
             }
             if let node = status.selectedNode { rows.append([localized("当前节点", "Current node"), terminalText(node)]) }
@@ -1369,8 +1355,8 @@ private final class TerminalConsole {
         var title = localized("分流预设", "Routing presets")
         var notes: [ConsoleLine] = []
         if let system = activeSystem, let profile {
-            let revision = try? profile.routing.systemPolicy.revision()
-            if let live = system.routingRevision, live == revision {
+            let revision = try? profile.routing.policy.revision()
+            if system.routingRevision == revision {
                 title += localized(" · 系统配置", " · System profile")
             } else if usesLivePolicy(system) {
                 title += localized(" · 待同步", " · Pending")
@@ -1403,54 +1389,22 @@ private final class TerminalConsole {
         showRules(rows, hasRules: !rules.isEmpty, notes: notes, title: localized("分流规则 · 本机配置", "Routing rules · Local profile"))
     }
 
-    private func showSystemRules(_ output: [ConsoleLine]) -> Bool {
-        // A previously installed system driver returns rule values and outbounds separated by this delimiter.
-        let separator = "  →  "
-        var rows: [[String]] = []
-        var fallback: String?
-        for line in output {
-            if let split = line.text.range(of: separator) {
-                let key = String(line.text[..<split.lowerBound])
-                let value = String(line.text[split.upperBound...])
-                if ["其余全部", "Everything else"].contains(key) {
-                    fallback = value
-                } else {
-                    rows.append([key, legacyRuleTarget(value)?.displayName ?? value])
-                }
-            }
-        }
-        guard let fallback else { return false }
-        let target = legacyRuleTarget(fallback)
-        let hasRules = !rows.isEmpty
+    private func showSystemRules(_ rules: [CustomRule], system: ProtectionStatus) {
+        var rows = rules.map { [$0.value, $0.target.displayName] }
         var notes: [ConsoleLine] = []
-        if !hasRules { notes.append(ConsoleLine(localized("暂无自定义规则。", "No custom rules yet."), .muted)) }
-        if ruleUpstreamAvailable { notes.append(ConsoleLine(localized("外部出站已配置。", "An external upstream is configured."), .muted)) }
-        let desired = profile?.routing.systemPolicy.fallback
-        let pending = target != nil && desired != target ? desired : nil
+        if rules.isEmpty { notes.append(ConsoleLine(localized("暂无自定义规则。", "No custom rules yet."), .muted)) }
+        if system.hasUpstream { notes.append(ConsoleLine(localized("外部出站已配置。", "An external upstream is configured."), .muted)) }
+        let desired = profile?.routing.fallback
+        let pending = desired == system.fallback ? nil : desired
         let label = pending == nil ? localized("其余全部", "Everything else") : localized("其余全部 · 当前", "Everything else · Active")
-        rows.append([label, target?.displayName ?? fallback])
-        if let pending, let system = activeSystem {
+        rows.append([label, system.fallback.displayName])
+        if let pending {
             rows.append([localized("其余全部 · 待应用", "Everything else · Pending"), pending.displayName])
             if !usesLivePolicy(system) {
                 notes.append(ConsoleLine(pendingPolicyMessage(system, lookup: "/system apply"), .muted))
             }
         }
-        showRules(rows, hasRules: hasRules, notes: notes, title: localized("分流规则 · 系统配置", "Routing rules · System profile"))
-        return true
-    }
-
-    private func legacyRuleTarget(_ value: String) -> RuleTarget? {
-        switch value {
-        case "直连", "Direct": return .direct
-        case "默认代理组", "Default proxy group": return .proxy
-        case "外部代理", "External upstream": return .upstream
-        default:
-            if let prefix = ["节点 · ", "Node · "].first(where: value.hasPrefix) {
-                return RuleTarget(rawValue: "node:" + value.dropFirst(prefix.count))
-            }
-            guard let prefix = ["代理组 · ", "Group · "].first(where: value.hasPrefix) else { return nil }
-            return RuleTarget(rawValue: "group:" + value.dropFirst(prefix.count))
-        }
+        showRules(rows, hasRules: !rules.isEmpty, notes: notes, title: localized("分流规则 · 系统配置", "Routing rules · System profile"))
     }
 
     private func showRules(_ rows: [[String]], hasRules: Bool, notes: [ConsoleLine], title: String) {
@@ -1584,9 +1538,9 @@ private final class TerminalConsole {
         switch draft.text.trimmingCharacters(in: .whitespaces) {
         case "/nodes add":
             return localized("Enter 打开添加页", "Enter Open form")
-        case "/nodes group", "/setup upstream", "/rules upstream":
+        case "/rules upstream":
             return localized("Enter 打开编辑页", "Enter Open editor")
-        case "/setup", "/setup import", "/nodes import":
+        case "/nodes import":
             return localized("输入文件路径  Enter 打开导入引导", "Type a file path  Enter for guided import")
         case "/rules add":
             return localized("输入域名或 IP/CIDR  Enter 打开引导", "Type a domain or IP/CIDR  Enter for guided entry")
@@ -1878,10 +1832,6 @@ private extension TerminalConsole {
         switch arguments {
         case ["nodes", "add"]:
             addNodeForm()
-        case ["nodes", "group"]:
-            guard FileManager.default.fileExists(atPath: paths.config.path) else { throw addNodesFirst }
-            let local = try ManagedProfile(paths.config)
-            editProxyGroup(local, order: local.order)
         case _ where arguments.starts(with: groupEditCommand):
             try openProxyGroupEditor(arguments.dropFirst(groupEditCommand.count))
         case ["check", "node"]:
@@ -1903,7 +1853,7 @@ private extension TerminalConsole {
             setCommandDraft(["rules", "add", try ruleValue(arguments[2])])
         case _ where (2...3).contains(arguments.count) && arguments.starts(with: ["rules", "remove"]):
             try loadRuleRemovalChoices(arguments)
-        case ["setup", "upstream"], ["rules", "upstream"]: try editUpstream()
+        case ["rules", "upstream"]: try editUpstream()
         case ["rules", "default", "upstream"] where profile?.upstream == nil: try upstreamForm(useForUnmatched: true)
         case ["system", "start"]:
             let installed = ProtectedService.installedStatus()
@@ -1928,7 +1878,7 @@ private extension TerminalConsole {
             showResult("›  " + runningLabel,
                        lines: [ConsoleLine(localized("正在通过当前网络检查出站。", "Checking outbounds on the current network."), .muted)])
         default:
-            return try setupForm(arguments)
+            return try importNodesForm(arguments)
         }
         return true
     }
@@ -2251,17 +2201,16 @@ private extension TerminalConsole {
         }))
     }
 
-    func setupForm(_ arguments: [String]) throws -> Bool {
-        guard arguments.starts(with: ["nodes", "import"]) ||
-            (arguments.first == "setup" && arguments[safe: 1] != "upstream") else { return false }
-        let sourceIndex = arguments[safe: 1] == "import" ? 2 : 1
+    func importNodesForm(_ arguments: [String]) throws -> Bool {
+        guard arguments.starts(with: ["nodes", "import"]) else { return false }
+        let sourceIndex = 2
         if arguments.count == sourceIndex {
             present(ConsoleForm(title: localized("导入节点", "Import nodes"),
                                 prompt: localized("拖入 sing-box JSON 文件或输入路径。", "Drop a sing-box JSON file or type its path."),
                                 accept: { console, value in
                 if value.trimmingCharacters(in: .whitespaces).isEmpty { console.backFromForm(); return }
-                let command = arguments + [try setupFilePath(value)]
-                if try !console.setupForm(command) { console.dispatch(command) }
+                let command = arguments + [try nodeFilePath(value)]
+                if try !console.importNodesForm(command) { console.dispatch(command) }
             }))
             return true
         }
@@ -2269,13 +2218,13 @@ private extension TerminalConsole {
             $0.offset.isMultiple(of: 2) && ["--node", "--group"].contains($0.element)
         }
         guard !hasOrder else { return false }
-        let source = try setupProfile(arguments[sourceIndex])
+        let source = try readNodeFile(arguments[sourceIndex])
         guard source.nodes.count > 1 else { return false }
-        setupNodeChoices(arguments, source: source, selected: [])
+        importNodeChoices(arguments, source: source, selected: [])
         return true
     }
 
-    func setupNodeChoices(_ arguments: [String], source: Profile, selected: [String], replacing: Bool = false) {
+    func importNodeChoices(_ arguments: [String], source: Profile, selected: [String], replacing: Bool = false) {
         let names = selected.isEmpty ? source.nodes.map(\.name) : selected
         let apply = names.flatMap { ["--node", $0] }
         var choices = [FormChoice(title: selected.isEmpty ? localized("导入全部", "Import all") : localized("导入所选", "Import selected")) { console in
@@ -2291,7 +2240,7 @@ private extension TerminalConsole {
         let taken = Set(selected)
         choices += source.nodes.filter { !taken.contains($0.name) }.map { node in
             FormChoice(title: terminalText(node.name), detail: node.protocolName) { console in
-                console.setupNodeChoices(arguments, source: source, selected: selected + [node.name], replacing: true)
+                console.importNodeChoices(arguments, source: source, selected: selected + [node.name], replacing: true)
             }
         }
         let prompt = selected.isEmpty

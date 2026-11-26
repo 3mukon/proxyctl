@@ -9,14 +9,13 @@ struct RuleCollection: Codable, Equatable {
 
     private static let titles: [String: (chinese: String, english: String)] = [
         "claude": ("Claude", "Claude"),
-        "openai": ("OpenAI", "OpenAI"),
+        "gpt": ("GPT", "GPT"),
         "gemini": ("Gemini", "Gemini"),
         "apple-relay": ("Apple 中继", "Apple Relay"),
         "direct-services": ("常用直连服务", "Direct Services"),
         "local-network": ("局域网", "Local Network"),
         "international-services": ("国际服务", "International Services")
     ]
-    private static let previousTitles = ["claude": "Claude 服务", "openai": "OpenAI 服务"]
 
     var title: String {
         guard let labels = Self.titles[name] else { return name }
@@ -28,14 +27,8 @@ struct RuleCollection: Codable, Equatable {
         return labels.chinese == labels.english ? [name, labels.english] : [name, labels.chinese, labels.english]
     }
 
-    var lookupNames: [String] {
-        guard let previous = Self.previousTitles[name] else { return searchNames }
-        return searchNames + [previous]
-    }
-
     func matchesSearch(_ query: String) -> Bool {
-        query.isEmpty || searchNames.contains { $0.localizedCaseInsensitiveContains(query) } ||
-            Self.previousTitles[name]?.caseInsensitiveCompare(query) == .orderedSame
+        query.isEmpty || searchNames.contains { $0.localizedCaseInsensitiveContains(query) }
     }
 
     static func index(matching name: String, in groups: [RuleCollection]) -> Int? {
@@ -43,7 +36,7 @@ struct RuleCollection: Codable, Equatable {
             return index
         }
         let matches = groups.indices.filter { index in
-            groups[index].lookupNames.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+            groups[index].searchNames.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
         }
         return matches.count == 1 ? matches.first : nil
     }
@@ -51,7 +44,6 @@ struct RuleCollection: Codable, Equatable {
     var builtIn: Bool { Preset(rawValue: name) != nil }
 
     private static let prefix = "proxyctl-preset:"
-    static let fallbackMarker = "proxyctl-explicit-default"
 
     var tag: String { "\(Self.prefix)\(target.identifier):\(name)" }
 
@@ -72,14 +64,14 @@ struct RuleCollection: Codable, Equatable {
     }
 
     static func decode(_ sets: [[String: Any]], routes: [[String: Any]], targets: [RuleTarget]) throws -> [RuleCollection] {
-        let originalPresets = [Preset.claude.rawValue, Preset.openai.rawValue]
+        let builtIns = Preset.allCases.map(\.rawValue)
         let identifiers = Dictionary(uniqueKeysWithValues: targets.map { ($0.identifier, $0) })
         var collections: [RuleCollection] = []
         for set in sets {
             guard let tag = set["tag"] as? String, tag.hasPrefix(prefix) else { continue }
             let parts = tag.dropFirst(prefix.count).split(separator: ":", maxSplits: 1).map(String.init)
             guard parts.count == 2, let target = identifiers[parts[0]], validStoredName(parts[1]),
-                  !originalPresets.contains(parts[1]) || target.usesManagedProxy,
+                  !builtIns.contains(parts[1]) || target.usesManagedProxy,
                   set["type"] as? String == "inline", let entries = entries(in: set),
                   entries.count <= 2, entries.allSatisfy({ $0.count == 1 }),
                   entries.flatMap(\.keys).allSatisfy({ RuleMatch(rawValue: $0) != nil }),
@@ -93,28 +85,7 @@ struct RuleCollection: Codable, Equatable {
                                                domains: try canonical(domains, .domain),
                                                networks: try canonical(networks, .network)))
         }
-        guard !collections.isEmpty else { return [] }
-        guard collections.prefix(originalPresets.count).map(\.name) == originalPresets else { throw invalid }
-
-        let gemini = preset(.gemini)
-        let position = originalPresets.count
-        if let existingIndex = index(matching: gemini.name, in: collections) {
-            let existing = collections[existingIndex]
-            if existingIndex == position, existing.name == gemini.name, existing.target.usesManagedProxy {
-                return collections
-            }
-            // Keep a legacy custom preset's members, outbound, and matching precedence.
-            let base = "\(existing.name) (custom)"
-            var name = base
-            var suffix = 2
-            while index(matching: name, in: collections) != nil {
-                name = "\(base) \(suffix)"
-                suffix += 1
-            }
-            collections[existingIndex] = RuleCollection(name: name, target: existing.target, enabled: existing.enabled,
-                                                        domains: existing.domains, networks: existing.networks)
-        }
-        collections.insert(gemini, at: position)
+        guard collections.prefix(builtIns.count).map(\.name) == builtIns else { throw invalid }
         return collections
     }
 

@@ -97,7 +97,6 @@ struct Status: Encodable {
     let service: String
     let port: Int?
     let selectedNode: String?
-    let systemServiceInstalled: Bool
     let protectedSystem: ProtectionStatus?
 }
 
@@ -105,10 +104,9 @@ func currentStatus(_ paths: Paths) -> Status {
     let exists = FileManager.default.fileExists(atPath: paths.config.path)
     let engine = try? Engine(paths)
     let selected = try? engine?.current()
-    let installed = SystemService(paths: paths).installed
     let service: String
     if selected != nil {
-        service = localJobPID(serviceLabel) != nil ? "system" : "preview"
+        service = "preview"
     } else if engine != nil {
         service = "ready"
     } else {
@@ -116,12 +114,11 @@ func currentStatus(_ paths: Paths) -> Status {
     }
     let system = paths.state == (try? Paths())?.state ? ProtectedService.installedStatus() : nil
     return Status(service: service, port: engine?.profile.port, selectedNode: selected,
-                  systemServiceInstalled: installed, protectedSystem: system)
+                  protectedSystem: system)
 }
 
 func localServiceText(_ service: String) -> String {
     let states = [
-        "system": localized("仅本机回环服务在运行", "Loopback service only"),
         "preview": localized("仅本机回环诊断在运行", "Loopback diagnostics only"),
         "ready": localized("本机配置已就绪", "Local profile ready"),
         "invalid": localized("本机配置无效", "Invalid local profile"),
@@ -135,7 +132,7 @@ func statusLines(_ status: Status) -> [String] {
     var lines = system.map(systemStatusLines) ?? [systemCaptureText(nil)]
     if system?.engineRunning == true || system?.firewallLoaded == true { return lines }
     lines.append(localServiceText(status.service))
-    if let port = status.port, ["system", "preview"].contains(status.service) {
+    if let port = status.port, status.service == "preview" {
         lines.append(localized("回环监听     127.0.0.1:\(port)", "Loopback     127.0.0.1:\(port)"))
     }
     if let selected = status.selectedNode { lines.append(localized("当前节点     \(terminalText(selected))", "Node         \(terminalText(selected))")) }
@@ -190,7 +187,7 @@ func awaitOrder(_ profile: Profile, currentOrder: [String] = []) throws -> [Stri
     return try profile.order(order)
 }
 
-func setupFilePath(_ input: String) throws -> String {
+func nodeFilePath(_ input: String) throws -> String {
     let path = (input as NSString).expandingTildeInPath
     if FileManager.default.fileExists(atPath: path) { return path }
     let parsed = try parseLine(input)
@@ -200,7 +197,7 @@ func setupFilePath(_ input: String) throws -> String {
     return parsed[0]
 }
 
-func setupProfile(_ source: String) throws -> Profile {
+func readNodeFile(_ source: String) throws -> Profile {
     if source.hasPrefix("--") {
         throw UserError(localized("请提供本机 sing-box JSON 文件。", "Choose a local sing-box JSON file."))
     }
@@ -208,16 +205,8 @@ func setupProfile(_ source: String) throws -> Profile {
     return try Profile(loadObject(localData(url)))
 }
 
-func setup(_ args: [String], _ paths: Paths) throws {
-    if args.first == "upstream" {
-        guard args.count <= 2 else {
-            throw UserError(localized("使用 \(commandExample("setup upstream URL|off"))",
-                                      "Use \(commandExample("setup upstream URL|off"))"))
-        }
-        try manageUpstream(Array(args.dropFirst()), paths, offerDefault: false)
-        return
-    }
-    var arguments = args.first == "import" ? Array(args.dropFirst()) : args
+func importNodes(_ args: [String], _ paths: Paths) throws {
+    var arguments = args
     if arguments.isEmpty && !tty {
         print(localized(
             """
@@ -235,7 +224,7 @@ func setup(_ args: [String], _ paths: Paths) throws {
     if arguments.isEmpty {
         print(localized("拖入 sing-box JSON 文件或输入路径。直接回车返回。", "Drop a sing-box JSON file or type its path. Press Enter on a blank line to go back."))
         guard let line = readLine(), !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        arguments = [try setupFilePath(line)]
+        arguments = [try nodeFilePath(line)]
     }
     var args = arguments[...]
     let source = args.popFirst()!
@@ -262,7 +251,7 @@ func setup(_ args: [String], _ paths: Paths) throws {
             fallback = route
         case "--port": port = Int(value) ?? 0
         case "--control-port": apiPort = Int(value) ?? 0
-        default: throw UserError(localized("未知的 setup 选项。", "Unknown import option."))
+        default: throw UserError(localized("未知的节点导入选项。", "Unknown import option."))
         }
     }
     guard group == nil || order.isEmpty else {
@@ -270,19 +259,16 @@ func setup(_ args: [String], _ paths: Paths) throws {
     }
     guard validPorts(port, apiPort) else { throw UserError(localized("代理端口与控制端口必须不同，且在 1024–65535 之间。", "Choose different proxy and control ports between 1024 and 65535.")) }
     try paths.locked {
-        if localJobPID(serviceLabel) != nil || ((try? Engine(paths).requireListener()) != nil) {
+        if (try? Engine(paths).requireListener()) != nil {
             throw UserError(localized("请先结束正在运行的 Proxyctl 回环代理。", "Stop the running Proxyctl loopback proxy first."))
         }
-        let profile = try setupProfile(source)
+        let profile = try readNodeFile(source)
         let names = try group.map(profile.importedGroup) ?? (order.isEmpty ? awaitOrder(profile) : profile.order(order))
-        let previous = try? ManagedProfile(paths.config)
+        let previous = FileManager.default.fileExists(atPath: paths.config.path) ? try ManagedProfile(paths.config) : nil
         let upstream = try external.map(profile.explicitUpstream) ?? previous?.upstream
         var routing = previous?.routing ?? Routing(presets: Preset.allCases)
         if let fallback {
             routing.fallback = try fallback.resolved(in: profile.nodes.map(\.name), groups: routing.groupNames)
-            routing.explicitDefault = fallback == .upstream || fallback.nodeName != nil || fallback.groupName != nil
-        } else if !routing.explicitDefault {
-            routing.fallback = .direct
         }
         if !presets.isEmpty {
             for index in routing.collections.indices {
@@ -300,40 +286,13 @@ func setup(_ args: [String], _ paths: Paths) throws {
     }
 }
 
-private func editNodeGroup(_ names: [String], paths: Paths) throws {
-    let order: [String]
-    if names.isEmpty {
-        guard FileManager.default.fileExists(atPath: paths.config.path) else {
-            throw UserError(localized("请先添加节点。", "Add a node first."))
-        }
-        let config = try loadObject(localData(paths.config))
-        let current = try ManagedProfile(config)
-        if !tty {
-            let members = current.order.map(terminalText).joined(separator: " → ")
-            print(localized("默认代理组 · \(members)", "Default proxy group · \(members)"))
-            let command = commandExample("nodes group NODE...")
-            print(localized("用 \(command) 按顺位指定组内节点。", "Use \(command) to set the members in priority order."))
-            return
-        }
-        let chosen = try awaitOrder(Profile(config), currentOrder: current.order)
-        order = try saveDefaultGroup(chosen, paths: paths, expectedRevision: current.defaultOrderRevision())
-    } else {
-        order = try saveDefaultGroup(names, paths: paths)
-    }
-    print(localized("默认代理组已保存", "Default proxy group saved") + " · " + order.map(terminalText).joined(separator: " → "))
-}
-
 func nodes(_ args: [String], _ paths: Paths) throws {
     if args.first == "import" {
-        try setup(args, paths)
+        try importNodes(Array(args.dropFirst()), paths)
         return
     }
     if args.first == "add" {
         try addNodeLinks(Array(args.dropFirst()), paths)
-        return
-    }
-    if args.first == "group" {
-        try editNodeGroup(Array(args.dropFirst()), paths: paths)
         return
     }
     let json = args.contains("--json")
@@ -392,31 +351,6 @@ func testNodes(_ arguments: [String], _ paths: Paths) throws {
     }
 }
 
-func service(_ args: [String], _ paths: Paths) throws {
-    guard args.count == 1, let command = args.first else {
-        throw UserError("用法：proxyctl service plan | install | start | stop | restart | remove")
-    }
-    let service = SystemService(paths: paths)
-    if command == "plan" {
-        let profile = try ManagedProfile(paths.config)
-        print("开机服务 \(serviceLabel) · 运行账户 \(service.user)")
-        print("回环代理 127.0.0.1:\(profile.port) · 控制接口 127.0.0.1:\(profile.controllerPort)")
-        print("策略顺序 \(profile.order.map(terminalText).joined(separator: " → "))")
-        return
-    }
-    try paths.locked {
-        switch command {
-        case "install": try service.install()
-        case "start": try service.start()
-        case "stop": try service.stop()
-        case "restart": try service.stop(); try service.start()
-        case "remove": try service.remove()
-        default: throw UserError("未知的 service 子命令。运行 proxyctl help。")
-        }
-    }
-    print("回环服务：\(command) 已完成。")
-}
-
 func tailLog(_ paths: Paths) throws {
     guard let handle = try? FileHandle(forReadingFrom: paths.log) else { print("目前没有内核日志。"); return }
     defer { try? handle.close() }
@@ -448,10 +382,9 @@ func execute(_ args: [String], _ paths: Paths) throws {
         if FileManager.default.fileExists(atPath: paths.config.path) {
             try paths.coreCheck(paths.config)
             print(localized("本机配置通过 sing-box 校验。", "sing-box validated the local profile."))
-        } else { print("接下来运行 proxyctl setup") }
+        } else { print(commandExample("nodes add")) }
     case "nodes": try nodes(rest, paths)
     case "groups": try manageGroups(rest, paths)
-    case "setup": try setup(rest, paths)
     case "presets": try managePresets(rest, paths)
     case "rules": try rules(rest, paths)
     case "preview":
@@ -460,8 +393,9 @@ func execute(_ args: [String], _ paths: Paths) throws {
             throw UserError(localized("运行 \(commandExample("nodes import")) 导入节点。", "Import nodes with \(commandExample("nodes import"))."))
         }
         let core = try paths.locked {
-            let profile = try upgradeLoopbackProfile(paths)
-            try SystemService(paths: paths).verifyStart(profile)
+            let engine = try Engine(paths)
+            try engine.verifyLoopbackStart()
+            let profile = engine.profile
             print(localized("仅本机回环诊断", "Loopback diagnostics only") + " · 127.0.0.1:\(profile.port) · " + localized("Ctrl-C 结束", "Ctrl-C to stop"))
             fflush(stdout)
             return try ManagedCore(paths)
@@ -497,13 +431,6 @@ func execute(_ args: [String], _ paths: Paths) throws {
             let delay = try engine.test(node, url: url)
             print(localized("隔离节点检测", "Isolated node check") + " · \(terminalText(node)) · \(delay) ms")
         }
-    case "_loopback":
-        guard rest.isEmpty, Bundle.main.executableURL?.resolvingSymlinksInPath().path == serviceDriver else {
-            throw UserError("该命令由回环服务运行。")
-        }
-        let servicePaths = try Paths(state: paths.state, core: URL(fileURLWithPath: serviceCore))
-        try ManagedCore(servicePaths).wait()
-    case "service": try service(rest, paths)
     case "system": try system(rest, paths)
     case "start", "stop", "enable", "disable": try system([command] + rest, paths)
     case "firewall": try firewall(rest)
@@ -557,9 +484,7 @@ func parseLine(_ line: String) throws -> [String] {
 }
 
 func consoleCommand(_ input: String) -> String {
-    let key = input.hasPrefix("/") ? String(input.dropFirst()) : input
-    let aliases = ["?": "help", "q": "quit", "exit": "quit"]
-    return aliases[key] ?? key
+    input.hasPrefix("/") ? String(input.dropFirst()) : input
 }
 
 func lineConsole(_ paths: Paths) {

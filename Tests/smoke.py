@@ -391,7 +391,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"/use --auto\r", "输入 / 查看日常命令。", wait_for_input=True)
         nodes_query = command + ["nodes", "--json"]
         original_group = json.loads(subprocess.check_output(nodes_query, timeout=8))
-        type_keys(b"/nodes group\r\r", "默认代理组 · 本机配置", wait_for_input=True)
+        type_keys(b"/groups edit default\r\r", "默认代理组 · 本机配置", wait_for_input=True)
         group_frame = result.rsplit(b"\x1b[2J", 1)[-1]
         assert all(label.encode() in group_frame for label in ("顺位 1", "顺位 2", "加入组"))
         assert b"\x1b[4;7H\x1b[1;38;2;243;240;236m " + "默认代理组 · 本机配置".encode() in group_frame
@@ -413,8 +413,10 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"\r", "保存更改", wait_for_input=True)
         type_keys(b"\x1b", "Enter 或 ↑↓ 选择  Esc 返回", wait_for_input=True)
         assert "保存更改".encode() in result.rsplit(b"\x1b[2J", 1)[-1]
-        type_keys(b"\x1b", "输入 / 查看命令", wait_for_input=True)
+        type_keys(b"\x1b", "› 默认代理组", wait_for_input=True)
+        assert b"H/groups edit " in result.rsplit(b"\x1b[2J", 1)[-1]
         assert json.loads(subprocess.check_output(nodes_query, timeout=8)) == original_group
+        type_keys(b"\x03", "输入 / 查看命令", wait_for_input=True)
         type_keys(b"\x1b", "代理概览", wait_for_input=True)
         running_preview = preview("美国")
         try:
@@ -443,13 +445,13 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert "代理概览".encode() in frame and b"H/presets " not in frame
         type_keys(b"/presets ", "启用预设")
         type_keys(b"d\t", "› Claude")
-        type_keys(b"open\r", b"H/presets disable openai ")
+        type_keys(b"gp\r", b"H/presets disable gpt ")
         groups = json.loads(subprocess.check_output(command + ["presets", "--json"], timeout=8))
-        assert next(group for group in groups if group["name"] == "openai")["enabled"]
-        type_keys(b"\r", "预设 OpenAI · 已停用", wait_for_input=True)
-        type_keys(b"/presets enable open\r\r", "预设 OpenAI · 已启用", wait_for_input=True)
-        type_keys(b"/presets disable open\r\r", "预设 OpenAI · 已停用", wait_for_input=True)
-        type_keys(b"/presets \r", "OpenAI   已停用")
+        assert next(group for group in groups if group["name"] == "gpt")["enabled"]
+        type_keys(b"\r", "预设 GPT · 已停用", wait_for_input=True)
+        type_keys(b"/presets enable gpt\r\r", "预设 GPT · 已启用", wait_for_input=True)
+        type_keys(b"/presets disable gp\r\r", "预设 GPT · 已停用", wait_for_input=True)
+        type_keys(b"/presets \r", "GPT      已停用")
         type_keys(b"/rou", b"H/rou", wait_for_input=True)
         assert " 命令 ".encode() not in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\x03", "输入 / 查看命令", wait_for_input=True)
@@ -465,7 +467,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"/lang\r", "› 简体中文")
         type_keys(b"\x1b[B\r", b"H/lang en ")
         type_keys(b"\r", "Proxy overview")
-        type_keys(b"/presets \r", "OpenAI   Off", wait_for_input=True)
+        type_keys(b"/presets \r", "GPT      Off", wait_for_input=True)
         preset_frame = result.rsplit(b"\x1b[2J", 1)[-1]
         assert b"Routing presets" in preset_frame and b"Esc Back" in preset_frame
         assert_shortcuts(preset_frame, b"/presets route", b"/presets edit")
@@ -482,7 +484,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         assert_reselection("› route")
         type_keys(b"\r", b"H/presets route ", wait_for_input=True)
         assert "› Claude".encode() in result.rsplit(b"\x1b[2J", 1)[-1]
-        type_keys(b"open\r", b"H/presets route openai ", wait_for_input=True)
+        type_keys(b"gp\r", b"H/presets route gpt ", wait_for_input=True)
         assert "› Default proxy group".encode() in result.rsplit(b"\x1b[2J", 1)[-1]
         type_keys(b"\x03", "Type / for commands", wait_for_input=True)
         type_keys(b"/nodes \r", "Nodes · Local profile", wait_for_input=True)
@@ -495,14 +497,15 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"\r", "Default proxy group saved", wait_for_input=True)
         group = json.loads(subprocess.check_output(nodes_query, timeout=8))
         assert group["order"] == ["美国 IPv6", "美国"] and group["nodes"] == original_group["nodes"]
-        type_keys(b"/nodes group\r\r", "Default proxy group · Local profile", wait_for_input=True)
+        type_keys(b"/groups edit default\r\r", "Default proxy group · Local profile", wait_for_input=True)
         type_keys(b"IPv6\r", "Move down", wait_for_input=True)
         type_keys(b"\r", "Save changes", wait_for_input=True)
-        subprocess.run(command + ["nodes", "group", "Other Region"], check=True, capture_output=True, timeout=8)
+        subprocess.run(command + ["groups", "default", "Other Region"], check=True, capture_output=True, timeout=8)
         type_keys(b"\r", "The default proxy group changed.", wait_for_input=True)
         assert json.loads(subprocess.check_output(nodes_query, timeout=8))["order"] == ["Other Region"]
-        type_keys(b"\x1b\x1b", "Type / for commands", wait_for_input=True)
-        subprocess.run(command + ["nodes", "group", *original_group["order"]], check=True, capture_output=True, timeout=8)
+        type_keys(b"\x1b\x1b", "› Default proxy group", wait_for_input=True)
+        type_keys(b"\x03", "Type / for commands", wait_for_input=True)
+        subprocess.run(command + ["groups", "default", *original_group["order"]], check=True, capture_output=True, timeout=8)
         type_keys(b"/groups \r", "Proxy groups · Local profile", wait_for_input=True)
         assert_shortcuts(result.rsplit(b"\x1b[2J", 1)[-1], b"/groups edit")
         type_keys(b"/groups edit ", "New proxy group", wait_for_input=True)
@@ -630,15 +633,14 @@ def tty_smoke(command, port, fetch, health, source, preview):
         complete_form('/rules remove form.test "node:美国 IPv6"\r\r'.encode(), "Removed")
         default_query = command + ["rules", "default", "--json"]
         before = json.loads(subprocess.check_output(default_query, timeout=8))
-        type_keys(b"/setup ", "View or edit the external proxy address", wait_for_input=True)
-        assert b"Import nodes from a sing-box JSON file" in result.rsplit(b"\x1b[2J", 1)[-1]
-        type_keys(b"upstream\r", b"\x1b[26;9H/setup upstream ")
+        type_keys(b"/rules ", "Edit the external proxy address", wait_for_input=True)
+        type_keys(b"upstream\r", b"\x1b[26;9H/rules upstream ")
         type_keys(b"\r", "Enter an independent proxy URL")
         complete_form(b"socks5://127.0.0.1:42179\r", "External upstream settings saved.")
         assert json.loads(subprocess.check_output(default_query, timeout=8)) == before
-        address = subprocess.check_output(command + ["setup", "upstream"], text=True, timeout=8)
+        address = subprocess.check_output(command + ["rules", "upstream"], text=True, timeout=8)
         assert "127.0.0.1 · 42179" in address
-        type_keys(b"/setup upstream\r\r", "Change address", wait_for_input=True)
+        type_keys(b"/rules upstream\r\r", "Change address", wait_for_input=True)
         upstream_editor = result.rsplit(b"\x1b[2J", 1)[-1]
         assert b"Clear address" in upstream_editor and b"127.0.0.1" in upstream_editor
         type_keys(b"\r", "Enter an independent proxy URL", wait_for_input=True)
@@ -648,10 +650,10 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"\x1b", "Change address", wait_for_input=True)
         type_keys(b"Clear\r", "› Cancel", wait_for_input=True)
         type_keys(b"\x1b[B\r", "External upstream settings saved.", wait_for_input=True)
-        address = subprocess.check_output(command + ["setup", "upstream"], text=True, env={**os.environ, "PROXYCTL_LANGUAGE": "en"}, timeout=8)
+        address = subprocess.check_output(command + ["rules", "upstream"], text=True, env={**os.environ, "PROXYCTL_LANGUAGE": "en"}, timeout=8)
         assert "No external upstream is configured." in address
 
-        type_keys(b"/setup import\r\r", "Drop a sing-box JSON")
+        type_keys(b"/nodes import\r\r", "Drop a sing-box JSON")
         type_keys(f"'{source}'\r".encode(), "Pick nodes in priority order")
         type_keys(b"IPv6\r", "Selected order  美国 IPv6", wait_for_input=True)
         type_keys(b"\x1b", "Enter or ↑↓ to select  Esc Back", wait_for_input=True)
@@ -661,31 +663,31 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"\x1b", "Type / for commands", wait_for_input=True)
         assert b"\x1b[?1049l" not in result[form_start:]
 
-        type_keys("/presets route 'OpenAI 服务' ".encode(), "› Default proxy group", wait_for_input=True)
+        type_keys(b"/presets route GPT ", "› Default proxy group", wait_for_input=True)
         assert b"Outbounds" in result.rsplit(b"\x1b[2J", 1)[-1]
         assert_reselection("› Default proxy group")
         type_keys(b"\x03", "Type / for commands", wait_for_input=True)
-        type_keys(b"/presets route open\r", "› Default proxy group", wait_for_input=True)
+        type_keys(b"/presets route gpt\r", "› Default proxy group", wait_for_input=True)
         type_keys(b"\x1b[B\x1b[B", "› Node · 美国 IPv6", wait_for_input=True)
         assert_reselection("› Node · 美国 IPv6")
         type_keys(b"\x1b", "Esc Close suggestions", wait_for_input=True)
         type_keys(b"\x1b", "Enter for options  Esc Previous input", wait_for_input=True)
         type_keys(b"\r", "› Node · 美国 IPv6", wait_for_input=True)
-        type_keys(b"IPv6", b"H/presets route openai IPv6", wait_for_input=True)
+        type_keys(b"IPv6", b"H/presets route gpt IPv6", wait_for_input=True)
         assert_reselection("› Node · 美国 IPv6")
-        type_keys(b"\r", 'H/presets route openai "node:美国 IPv6" ', wait_for_input=True)
+        type_keys(b"\r", 'H/presets route gpt "node:美国 IPv6" ', wait_for_input=True)
         groups = json.loads(subprocess.check_output(command + ["presets", "--json"], timeout=8))
-        assert next(group for group in groups if group["name"] == "openai")["target"] == "proxy"
-        type_keys(b"\r", "OpenAI  →  Node · 美国 IPv6", wait_for_input=True)
+        assert next(group for group in groups if group["name"] == "gpt")["target"] == "proxy"
+        type_keys(b"\r", "GPT  →  Node · 美国 IPv6", wait_for_input=True)
         for command_input, highlight in (
             (b"/hel", "› /help"),
             (b"/presets rou", "› route"),
-            (b"/setup im", "› import"),
+            (b"/nodes im", "› import"),
             (b"/check node IPv6", "› 美国 IPv6"),
             (b"/lang Eng", "› English"),
-            (b"/presets enable ope", "› OpenAI"),
+            (b"/presets enable gp", "› GPT"),
             (b"/presets route gem", "› Gemini"),
-            (b"/presets disable ope", "› OpenAI"),
+            (b"/presets disable gp", "› GPT"),
             (b"/rules default IPv6", "› Node · 美国 IPv6"),
         ):
             type_keys(command_input, b"H" + command_input, wait_for_input=True)
@@ -881,7 +883,7 @@ def tty_smoke(command, port, fetch, health, source, preview):
         offset = len(result)
         resize(44, 11)
         expect(b"\x1b[9;7H\x1b[?25h", after=offset)
-        type_keys(b"/nodes group\r\r", "选择节点调整顺位", wait_for_input=True)
+        type_keys(b"/groups edit default\r\r", "选择节点调整顺位", wait_for_input=True)
         narrow_group = result.rsplit(b"\x1b[2J", 1)[-1]
         assert b"\x1b[3;5H" in narrow_group and "顺位 1".encode() in narrow_group
         assert b"\x1b[9;7H\x1b[?25h" in narrow_group
@@ -889,25 +891,26 @@ def tty_smoke(command, port, fetch, health, source, preview):
         type_keys(b"\x1b", "第 2/2 页", wait_for_input=True)
         deselected_page = result.rsplit(b"\x1b[2J", 1)[-1]
         assert "加入组".encode() in deselected_page and "› Other Region".encode() not in deselected_page
-        type_keys(b"\x1b", "代理概览", wait_for_input=True)
+        type_keys(b"\x1b", b"H/groups edit ", wait_for_input=True)
+        type_keys(b"\x03", "代理概览", wait_for_input=True)
         type_keys(b"/status \r", "运行状态", wait_for_input=True)
         narrow_status = result.rsplit(b"\x1b[2J", 1)[-1]
         assert b"\x1b[3;5H" in narrow_status and "开机自启".encode() in narrow_status
         assert "╭".encode() not in narrow_status.split(b"\x1b[8;3H", 1)[0]
         if "本机配置已就绪".encode() not in narrow_status:
             type_keys(b"\x1b[C", "本机配置已就绪", wait_for_input=True)
-        type_keys(b"/status --json\r", "Esc 返回   ← → 翻页")
+        type_keys(b"/nodes --json\r", "Esc 返回   ← → 翻页")
         type_keys(b"\x1b[C", "第 2/", wait_for_input=True)
-        type_keys(b"/setup\r", b"H/setup ")
+        type_keys(b"/nodes im\r", b"H/nodes import ")
         type_keys(b"\r", "拖入 sing-box JSON", wait_for_input=True)
         type_keys(b"\x1b", "第 2/", wait_for_input=True)
         type_keys(b"\x1b[D", "第 1/")
         type_keys(b"\x1b", "代理概览")
-        type_keys(b"\x1b[A", b"H/status --json")
+        type_keys(b"\x1b[A", b"H/nodes --json")
         type_keys(b"\x1b", "输入 / 查看命令")
         type_keys(b"\x1b[200~/quit\n/presets\x1b[201~", b"/quit /presets")
         type_keys(b"\x03", "输入 / 查看命令")
-        type_keys(b"/setup\r", b"H/setup ")
+        type_keys(b"/nodes im\r", b"H/nodes import ")
         type_keys(b"\r", "拖入 sing-box JSON")
         type_keys(b"\x1b", "输入 / 查看命令")
         type_keys(b"/preview\r", f"127.0.0.1:{port}")
@@ -982,16 +985,13 @@ def verify(bundle, scratch, fixture, first, second, outside):
 
     env = {**os.environ, "PROXYCTL_INSTALL_ROOT": str(home), "PATH": f"{home}/.local/bin:/usr/bin:/bin"}
     (home / ".local/bin").mkdir(parents=True)
-    retired = home / ".local/bin/sbctl"
-    retired.symlink_to(home / ".local/share/proxyctl/versions/0.1.0/bin/proxyctl")
+    unrelated = home / ".local/bin/another-tool"
+    unrelated.write_text("unrelated command")
     for _ in range(2):
         subprocess.run(["/bin/sh", str(bundle / "install.sh")], env=env, check=True, capture_output=True, timeout=15)
     bundled_version = subprocess.check_output([str(bundle / "bin/proxyctl"), "--version"], text=True).strip()
     assert subprocess.check_output(["proxyctl", "--version"], env=env, text=True).strip() == bundled_version
-    assert not retired.is_symlink()
-    retired.write_text("unrelated command")
-    subprocess.run(["/bin/sh", str(bundle / "install.sh")], env=env, check=True, capture_output=True, timeout=15)
-    assert retired.read_text() == "unrelated command"
+    assert unrelated.read_text() == "unrelated command"
     command = [str(home / ".local/bin/proxyctl"), "--state-dir", str(state)]
 
     def cli(*args, ok=True):
@@ -1001,35 +1001,29 @@ def verify(bundle, scratch, fixture, first, second, outside):
 
     inventory = json.loads(cli("nodes", "--file", str(source), "--json"))
     assert [item["name"] for item in inventory["nodes"]] == [first.name, second.name, outside.name]
-    cli("legacy", ok=False)
-    cli("setup", "--legacy", ok=False)
-    cli("nodes", "--legacy", ok=False)
-    cli("use", "--auto", ok=False)
-    cli("system", "use", "--auto", ok=False)
     cli("system", "_manage-installed", "en", "shell", "check", ok=False)
-    cli("setup", str(source), "--port", str(port), "--control-port", str(control), "--default", "proxy",
+    cli("nodes", "import", str(source), "--port", str(port), "--control-port", str(control), "--default", "proxy",
         "--node", first.name, "--node", second.name.lower())
     config = state / "profile.json"
     baseline = config.read_bytes()
-    cli("setup", str(source), "--node", "DIRECT", ok=False)
+    cli("nodes", "import", str(source), "--node", "DIRECT", ok=False)
     assert config.read_bytes() == baseline
-    assert first.name in cli("nodes", "group")
-    cli("nodes", "group", first.name, first.name, ok=False)
+    assert first.name in cli("groups")
+    cli("groups", "default", first.name, first.name, ok=False)
     assert config.read_bytes() == baseline
-    cli("nodes", "group", outside.name, first.name)
+    cli("groups", "default", outside.name, first.name)
     expected = json.loads(baseline)
     selector = next(outbound for outbound in expected["outbounds"] if outbound["tag"] == "proxyctl-selected")
     selector["outbounds"] = [outside.name, first.name]
     selector["default"] = outside.name
     assert json.loads(config.read_bytes()) == expected
     assert json.loads(cli("system", "plan", "--json"))["order"] == [outside.name, first.name]
-    cli("nodes", "group", first.name, second.name)
+    cli("groups", "default", first.name, second.name)
     assert config.read_bytes() == baseline
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     assert stat.S_IMODE(state.stat().st_mode) == 0o700
     staged = json.loads(cli("status", "--json"))
     assert staged["service"] == "ready" and staged["port"] == port
-    assert first.name in cli("service", "plan")
     for language in ("zh", "en"):
         help_text = subprocess.check_output(command + ["--help"], env={**os.environ, "PROXYCTL_LANGUAGE": language}, text=True)
         assert "proxyctl preview" not in help_text and "proxyctl service" not in help_text
@@ -1038,7 +1032,7 @@ def verify(bundle, scratch, fixture, first, second, outside):
     assert json.loads(cli("status", "--json"))["service"] == "ready"
     assert config.read_bytes() == baseline
     planned = json.loads(cli("system", "plan", "--json"))
-    assert planned["fallback"] == "direct" and planned["presets"] == ["claude", "openai", "gemini"]
+    assert planned["fallback"] == "proxy" and planned["presets"] == ["claude", "gpt", "gemini"]
 
     def preview(expected, automatic=False):
         if automatic:
@@ -1081,7 +1075,7 @@ def verify(bundle, scratch, fixture, first, second, outside):
         payload(first)
         assert first.name in cli("check", "--url", health)
         assert second.name in cli("test", second.name, "--url", health)
-        cli("setup", str(source), "--node", outside.name, ok=False)
+        cli("nodes", "import", str(source), "--node", outside.name, ok=False)
         first.available = False
         output = cli("test", "--url", health)
         assert output.index(first.name) < output.index(second.name) and "探测失败" in output
@@ -1105,17 +1099,19 @@ def verify(bundle, scratch, fixture, first, second, outside):
     finally:
         stop(process)
 
-    cli("setup", str(source), "--port", str(port), "--control-port", str(control),
+    cli("nodes", "import", str(source), "--port", str(port), "--control-port", str(control),
         "--node", first.name, "--node", second.name, "--preset", "claude", "--preset", "gemini")
     enabled = {entry["name"]: entry["enabled"] for entry in json.loads(cli("presets", "--json"))}
-    assert enabled == {"claude": True, "openai": False, "gemini": True}
-    cli("presets", "enable", "openai")
+    assert enabled == {"claude": True, "gpt": False, "gemini": True}
+    assert json.loads(cli("system", "plan", "--json"))["fallback"] == "proxy"
+    cli("rules", "default", "direct")
+    cli("presets", "enable", "gpt")
     cli("presets", "disable", "claude")
     plan = json.loads(cli("system", "plan", "--json"))
-    assert plan["presets"] == ["openai", "gemini"] and plan["fallback"] == "direct" and len(plan["addresses"]) == 2
+    assert plan["presets"] == ["gpt", "gemini"] and plan["fallback"] == "direct" and len(plan["addresses"]) == 2
     cli("presets", "enable", "claude")
     plan = json.loads(cli("system", "plan", "--json"))
-    assert plan["presets"] == ["claude", "openai", "gemini"] and plan["order"] == [first.name, second.name]
+    assert plan["presets"] == ["claude", "gpt", "gemini"] and plan["order"] == [first.name, second.name]
     rules = cli("firewall", "plan")
     assert "on utun99" in rules and "user = 0 group =" in rules
     assert "block drop out quick inet all" in rules and "block drop out quick inet6 all" in rules
@@ -1173,27 +1169,24 @@ def verify_policy(bundle, scratch, fixture, first, second, upstream):
         response.begin()
         return response.read().decode()
 
-    cli("setup", str(source), "--group", order["tag"], "--port", str(port), "--control-port", str(controller))
-    legacy_file = state / "profile.json"
-    legacy = json.loads(legacy_file.read_bytes())
-    definitions = {item["tag"]: item for item in legacy["route"].pop("rule_set")}
-    legacy["route"]["final"] = "proxyctl-selected"
-    original_routes = []
-    for rule in legacy["route"]["rules"]:
-        tags = rule.get("rule_set", [])
-        if tags and tags[0].startswith("proxyctl-preset:"):
-            for entry in definitions[tags[0]]["rules"]:
-                original_routes.append({**entry, "action": "route", "outbound": rule["outbound"]})
-        if not tags:
-            original_routes.append(rule)
-    legacy["route"]["rules"] = original_routes
-    legacy["dns"]["rules"] = [rule for rule in legacy["dns"]["rules"] if "rule_set" not in rule]
-    legacy["outbounds"] = [entry for entry in legacy["outbounds"] if entry["tag"] != "proxyctl-direct"]
-    legacy_file.write_text(json.dumps(legacy))
+    import_args = ("nodes", "import", str(source), "--group", order["tag"], "--port", str(port), "--control-port", str(controller))
+    cli(*import_args)
+    profile = state / "profile.json"
+    valid = profile.read_bytes()
+    incomplete = json.loads(valid)
+    incomplete["route"]["rule_set"] = [
+        definition for definition in incomplete["route"]["rule_set"]
+        if not definition["tag"].endswith(":gemini")
+    ]
+    invalid = json.dumps(incomplete).encode()
+    profile.write_bytes(invalid)
+    cli("presets", "--json", ok=False)
+    cli(*import_args, ok=False)
+    assert profile.read_bytes() == invalid
+    profile.write_bytes(valid)
     cli("rules", "add", "192.0.2.1", "direct")
     cli("rules", "remove", "192.0.2.1", "direct")
     assert json.loads(cli("rules", "--json")) == []
-    cli("setup", str(source), "--group", order["tag"], "--port", str(port), "--control-port", str(controller))
     cli("rules", "upstream", f"socks5://127.0.0.1:{port}", ok=False)
     cli("rules", "upstream", f"socks5://127.0.0.1:{upstream.server_address[1]}")
     cli("rules", "add", "*.External.Test.", "upstream")
@@ -1343,7 +1336,7 @@ def verify_catch_all(bundle, scratch, primary, upstream):
         assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
         return result.stdout
 
-    cli("setup", str(source), "--node", primary.name, "--port", str(port), "--control-port", str(controller))
+    cli("nodes", "import", str(source), "--node", primary.name, "--port", str(port), "--control-port", str(controller))
     cli("rules", "default", "upstream", ok=False)
     cli("rules", "upstream", f"socks5://127.0.0.1:{upstream.server_address[1]}", "--default")
     assert json.loads(cli("rules", "default", "--json")) == "upstream"
@@ -1355,7 +1348,7 @@ def verify_catch_all(bundle, scratch, primary, upstream):
     cli("presets", "create", "Empty", "direct")
     cli("presets", "disable", "Empty")
     cli("presets", "delete", "Empty")
-    cli("presets", "remove", "openai", "openai.com")
+    cli("presets", "remove", "gpt", "openai.com")
     plan = json.loads(cli("system", "plan", "--json"))
     assert plan["fallback"] == "upstream" and plan["upstream"]
     assert any(x["name"] == "Work" and x["networks"] == ["192.0.2.0/24"] for x in plan["collections"])
@@ -1412,7 +1405,7 @@ def verify_catch_all(bundle, scratch, primary, upstream):
 
     labels = [
         ("claude", "Claude", "Claude"),
-        ("openai", "OpenAI", "OpenAI"),
+        ("gpt", "GPT", "GPT"),
         ("gemini", "Gemini", "Gemini"),
         ("apple-relay", "Apple 中继", "Apple Relay"),
         ("direct-services", "常用直连服务", "Direct Services"),
@@ -1424,7 +1417,7 @@ def verify_catch_all(bundle, scratch, primary, upstream):
     cli("presets", "disable", "国际服务")
     assert not next(group for group in json.loads(cli("presets", "--json")) if group["name"] == "international-services")["enabled"]
     cli("presets", "enable", "International Services")
-    cli("presets", "route", "Claude 服务", "direct", ok=False)
+    cli("presets", "route", "Claude", "direct", ok=False)
     policy = cli("presets", "--json")
     for language, label_column in (("zh", 1), ("en", 2)):
         env = {**os.environ, "PROXYCTL_LANGUAGE": language}
@@ -1443,7 +1436,7 @@ def verify_node_routes(bundle, scratch, fixture, primary, backup, dedicated):
     command = [str(bundle / "bin/proxyctl"), "--state-dir", str(state)]
     pin = f"node:{dedicated.name}"
     primary_pin = f"node:{primary.name}"
-    setup = ["setup", str(source), "--node", primary.name, "--node", backup.name,
+    setup = ["nodes", "import", str(source), "--node", primary.name, "--node", backup.name,
              "--port", str(port), "--control-port", str(controller)]
 
     def cli(*args, ok=True, data=None):
@@ -1452,8 +1445,8 @@ def verify_node_routes(bundle, scratch, fixture, primary, backup, dedicated):
         return result.stdout
 
     cli(*setup)
-    cli("presets", "route", "openai", "node:other region")
-    cli("presets", "route", "openai", "direct", ok=False)
+    cli("presets", "route", "gpt", "node:other region")
+    cli("presets", "route", "gpt", "direct", ok=False)
     cli("presets", "create", "Work", primary_pin, "work.test")
     cli("rules", "add", "override.test", "proxy")
     cli("rules", "add", "192.0.2.0/24", primary_pin)
@@ -1467,13 +1460,13 @@ def verify_node_routes(bundle, scratch, fixture, primary, backup, dedicated):
     plan = json.loads(cli("system", "plan", "--json"))
     assert plan["fallback"] == pin and dedicated.name not in plan["order"]
     assert {entry["name"]: entry["target"] for entry in plan["collections"]} == {
-        "claude": "proxy", "openai": pin, "gemini": "proxy", "Work": primary_pin,
+        "claude": "proxy", "gpt": pin, "gemini": "proxy", "Work": primary_pin,
     }
     assert any(item["target"] == primary_pin and item["match"] == "ip_cidr" for item in plan["rules"])
     candidate = json.loads(profile.read_text())
     dns = candidate["dns"]
     assert next(server for server in dns["servers"] if server["tag"] == dns["final"])["detour"] == dedicated.name
-    assert any(rule.get("domain_suffix") == next(entry["domains"] for entry in plan["collections"] if entry["name"] == "openai")
+    assert any(rule.get("domain_suffix") == next(entry["domains"] for entry in plan["collections"] if entry["name"] == "gpt")
                and rule["server"] == dns["final"] for rule in dns["rules"])
 
     def fetch(url):
@@ -1551,7 +1544,7 @@ def verify_group_routes(bundle, scratch, fixture, primary, backup, dedicated):
     cli("presets", "create", "GitHub", "group:git work", "github.test")
     cli("rules", "add", "single.test", target)
     cli("rules", "add", "localhost", "direct")
-    cli("presets", "route", "openai", main_target)
+    cli("presets", "route", "gpt", main_target)
     cli("presets", "route", "Gemini", "direct", ok=False)
     cli("presets", "route", "Gemini", main_target)
     cli("rules", "default", target)
